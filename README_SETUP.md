@@ -8,7 +8,7 @@
 conda env create -f environment.yml
 
 # Activate the environment
-conda activate quantum_pkpd
+conda activate quantum_challenge
 
 # Verify installation
 python -c "import pennylane as qml; print(f'PennyLane version: {qml.__version__}')"
@@ -16,11 +16,11 @@ python -c "import pennylane as qml; print(f'PennyLane version: {qml.__version__}
 
 ### Option 2: Manual setup
 ```bash
-# Create new conda environment with Python 3.11
-conda create -n quantum_pkpd python=3.11 -y
+# Create new conda environment with Python 3.10
+conda create -n quantum_challenge python=3.10 -y
 
 # Activate environment
-conda activate quantum_pkpd
+conda activate quantum_challenge
 
 # Install packages from conda-forge
 conda install -c conda-forge numpy scipy pandas scikit-learn matplotlib seaborn jupyter -y
@@ -94,7 +94,7 @@ conda env list
 conda deactivate
 
 # Remove environment (if needed)
-conda env remove -n quantum_pkpd
+conda env remove -n quantum_challenge
 
 # Update environment from YAML
 conda env update -f environment.yml --prune
@@ -116,6 +116,6 @@ pip install -e .
 
 ## Next Steps
 
-1. Activate environment: `conda activate quantum_pkpd`
+1. Activate environment: `conda activate quantum_challenge`
 2. Run exploratory analysis: `python main.py --explore`
 3. Train quantum model: `python main.py --model quantum --train`
