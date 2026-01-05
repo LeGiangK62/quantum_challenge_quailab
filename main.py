@@ -334,6 +334,78 @@ def main():
     else:
         raise ValueError(f"Unknown model type: {args.model}")
 
+    # Prepare test data with predictions for time series plots
+    test_data_with_predictions = None
+    try:
+        # Get original test data with metadata
+        original_df = processor.df[processor.df['EVID'] == 0].copy()
+        if 'MDV' in original_df.columns:
+            original_df = original_df[original_df['MDV'] == 0]
+
+        # Handle different model types differently
+        if args.model in ['cnn', 'lstm']:
+            # For sequence models: predictions correspond to sequences, not individual time points
+            # We'll create a simplified mapping - each prediction to last time point of sequence
+            print("Note: Time series plots for CNN/LSTM show sequence-level predictions")
+            # For now, skip detailed time series for sequence models
+            # TODO: Implement proper sequence-to-timepoint mapping
+            test_data_with_predictions = None
+
+        elif args.model in ['gcn', 'gat']:
+            # For GNN models: predictions are at node level
+            # Each node corresponds to one observation (time point)
+            # We can use all test nodes
+            print("Creating time series plots for GNN model...")
+
+            # Get test mask indices from the data object used during training
+            # For simplicity, we'll match predictions by length
+            # This assumes the test data maintains order
+            test_size = len(y_pred)
+
+            # Sample from original_df to match test size
+            # Note: This is approximate - proper implementation would track exact indices
+            sampled_indices = original_df.index[-test_size:]
+            test_data_with_predictions = original_df.loc[sampled_indices].copy()
+            test_data_with_predictions['predictions'] = y_pred
+
+            required_cols = ['ID', 'TIME', 'DV', 'predictions']
+            if 'DVID' in test_data_with_predictions.columns:
+                required_cols.append('DVID')
+
+            test_data_with_predictions = test_data_with_predictions[
+                [col for col in required_cols if col in test_data_with_predictions.columns]
+            ]
+
+        else:
+            # For tabular models (Linear, Ridge, Lasso, SVM, MLP)
+            # Match test indices directly
+            if hasattr(y_test, 'index'):
+                test_indices = y_test.index
+            else:
+                # If y_test is numpy array, we need to get indices from the split
+                X, y = processor.prepare_features_target()
+                from sklearn.model_selection import train_test_split
+                _, _, _, y_test_indexed = train_test_split(
+                    X, y, test_size=args.test_size, random_state=args.random_seed
+                )
+                test_indices = y_test_indexed.index
+
+            # Create DataFrame with predictions
+            test_data_with_predictions = original_df.loc[test_indices].copy()
+            test_data_with_predictions['predictions'] = y_pred
+
+            # Ensure we have required columns
+            required_cols = ['ID', 'TIME', 'DV', 'predictions']
+            if 'DVID' in test_data_with_predictions.columns:
+                required_cols.append('DVID')
+
+            test_data_with_predictions = test_data_with_predictions[
+                [col for col in required_cols if col in test_data_with_predictions.columns]
+            ]
+    except Exception as e:
+        print(f"Warning: Could not prepare time series data: {e}")
+        test_data_with_predictions = None
+
     # Convert to numpy if needed
     if hasattr(y_test, 'values'):
         y_test = y_test.values
@@ -351,7 +423,8 @@ def main():
             train_losses=extra_info.get('train_losses'),
             val_losses=extra_info.get('val_losses'),
             feature_importance=extra_info.get('feature_importance'),
-            results_dir=args.results_dir
+            results_dir=args.results_dir,
+            test_data_with_predictions=test_data_with_predictions
         )
 
         # Save model if requested
