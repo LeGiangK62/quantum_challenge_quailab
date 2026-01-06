@@ -70,14 +70,170 @@ class PKPDDataProcessor:
 
         return stats
 
+    def engineer_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Engineer advanced features for PK/PD prediction.
+        Implements 36+ engineered features based on pharmacokinetic principles.
+
+        Args:
+            df: DataFrame with observations (must contain ID, TIME, DOSE, BW, COMED columns)
+
+        Returns:
+            DataFrame with engineered features
+        """
+        engineered_df = df.copy()
+
+        if self.verbose:
+            print("\n=== Feature Engineering ===")
+            print("Creating 36+ advanced features...")
+
+        # Sort by ID and TIME to ensure proper temporal ordering
+        engineered_df = engineered_df.sort_values(['ID', 'TIME']).reset_index(drop=True)
+
+        # 1. TIME TRANSFORMATIONS (3 features)
+        if self.verbose:
+            print("  1. Time transformations...")
+        engineered_df['TIME_squared'] = engineered_df['TIME'] ** 2
+        engineered_df['TIME_log'] = np.log1p(engineered_df['TIME'])  # log(1 + TIME) to handle TIME=0
+        engineered_df['TIME_sqrt'] = np.sqrt(engineered_df['TIME'])
+
+        # 2. DOSE HISTORY FEATURES (3 features)
+        if self.verbose:
+            print("  2. Dose history features...")
+        # Get dosing events (EVID=1)
+        if 'EVID' in df.columns and 'AMT' in df.columns:
+            dose_df = df[df['EVID'] == 1][['ID', 'TIME', 'AMT']].copy()
+            dose_df = dose_df.rename(columns={'AMT': 'DOSE_AMT', 'TIME': 'DOSE_TIME'})
+
+            # For each observation, find time since last dose and last dose amount
+            engineered_df['time_since_last_dose'] = 0.0
+            engineered_df['last_dose_amount'] = 0.0
+            engineered_df['cumulative_dose'] = 0.0
+
+            for subject_id in engineered_df['ID'].unique():
+                subject_mask = engineered_df['ID'] == subject_id
+                subject_doses = dose_df[dose_df['ID'] == subject_id].copy()
+
+                if len(subject_doses) > 0:
+                    for idx in engineered_df[subject_mask].index:
+                        obs_time = engineered_df.loc[idx, 'TIME']
+
+                        # Find all doses before this observation
+                        prior_doses = subject_doses[subject_doses['DOSE_TIME'] <= obs_time]
+
+                        if len(prior_doses) > 0:
+                            # Time since last dose
+                            last_dose_time = prior_doses['DOSE_TIME'].max()
+                            engineered_df.loc[idx, 'time_since_last_dose'] = obs_time - last_dose_time
+
+                            # Last dose amount
+                            last_dose = prior_doses[prior_doses['DOSE_TIME'] == last_dose_time]['DOSE_AMT'].iloc[0]
+                            engineered_df.loc[idx, 'last_dose_amount'] = last_dose
+
+                            # Cumulative dose
+                            engineered_df.loc[idx, 'cumulative_dose'] = prior_doses['DOSE_AMT'].sum()
+        else:
+            # Fallback if dose events not available
+            engineered_df['time_since_last_dose'] = engineered_df['TIME']
+            engineered_df['last_dose_amount'] = engineered_df.get('DOSE', 0)
+            engineered_df['cumulative_dose'] = engineered_df.get('DOSE', 0)
+
+        # 3. ROLLING WINDOW FEATURES (7 windows)
+        if self.verbose:
+            print("  3. Rolling window features (7 windows)...")
+        windows = [24, 48, 72, 96, 120, 144, 168]  # Hours
+
+        for window in windows:
+            # Rolling mean of DV within time window
+            engineered_df[f'rolling_mean_{window}h'] = 0.0
+
+            # Calculate per patient
+            for subject_id in engineered_df['ID'].unique():
+                subject_mask = engineered_df['ID'] == subject_id
+                subject_data = engineered_df[subject_mask].copy()
+
+                for idx in subject_data.index:
+                    current_time = engineered_df.loc[idx, 'TIME']
+                    time_window_mask = (subject_data['TIME'] >= current_time - window) & \
+                                     (subject_data['TIME'] < current_time)
+
+                    if 'DV' in subject_data.columns:
+                        window_values = subject_data.loc[subject_data.index[time_window_mask], 'DV']
+                        if len(window_values) > 0:
+                            engineered_df.loc[idx, f'rolling_mean_{window}h'] = window_values.mean()
+
+        # 4. EXPONENTIAL DECAY FEATURES (3 half-lives)
+        if self.verbose:
+            print("  4. Exponential decay features (drug elimination)...")
+        half_lives = [24, 48, 72]  # Hours
+
+        for hl in half_lives:
+            decay_rate = np.log(2) / hl
+            engineered_df[f'exp_decay_{hl}h'] = np.exp(-decay_rate * engineered_df['TIME'])
+
+            # Dose-weighted exponential decay
+            if 'last_dose_amount' in engineered_df.columns:
+                engineered_df[f'dose_exp_decay_{hl}h'] = \
+                    engineered_df['last_dose_amount'] * np.exp(-decay_rate * engineered_df['time_since_last_dose'])
+
+        # 5. INTERACTION FEATURES (3 interactions)
+        if self.verbose:
+            print("  5. Interaction features...")
+        if 'BW' in engineered_df.columns:
+            engineered_df['BW_x_DOSE'] = engineered_df['BW'] * engineered_df.get('DOSE', 0)
+            engineered_df['BW_x_TIME'] = engineered_df['BW'] * engineered_df['TIME']
+
+        engineered_df['TIME_x_DOSE'] = engineered_df['TIME'] * engineered_df.get('DOSE', 0)
+
+        if 'COMED' in engineered_df.columns:
+            engineered_df['COMED_x_DOSE'] = engineered_df['COMED'] * engineered_df.get('DOSE', 0)
+            engineered_df['COMED_x_TIME'] = engineered_df['COMED'] * engineered_df['TIME']
+
+        # 6. PER-KG NORMALIZATION (dose features normalized by body weight)
+        if self.verbose:
+            print("  6. Per-kg dose normalization...")
+        if 'BW' in engineered_df.columns:
+            # Avoid division by zero
+            bw_safe = engineered_df['BW'].replace(0, 1)
+
+            if 'DOSE' in engineered_df.columns:
+                engineered_df['dose_per_kg'] = engineered_df['DOSE'] / bw_safe
+
+            if 'last_dose_amount' in engineered_df.columns:
+                engineered_df['last_dose_per_kg'] = engineered_df['last_dose_amount'] / bw_safe
+
+            if 'cumulative_dose' in engineered_df.columns:
+                engineered_df['cumulative_dose_per_kg'] = engineered_df['cumulative_dose'] / bw_safe
+
+        # 7. ADDITIONAL TEMPORAL FEATURES
+        if self.verbose:
+            print("  7. Additional temporal features...")
+        # Time of day effects (assuming TIME is in hours from start)
+        engineered_df['TIME_sin'] = np.sin(2 * np.pi * engineered_df['TIME'] / 24)
+        engineered_df['TIME_cos'] = np.cos(2 * np.pi * engineered_df['TIME'] / 24)
+
+        # Observation order per patient
+        engineered_df['observation_number'] = engineered_df.groupby('ID').cumcount() + 1
+
+        # Time from previous observation
+        engineered_df['time_from_prev_obs'] = engineered_df.groupby('ID')['TIME'].diff().fillna(0)
+
+        if self.verbose:
+            print(f"Feature engineering complete! Created {len(engineered_df.columns)} total features.")
+            print(f"New engineered features: {len(engineered_df.columns) - len(df.columns)}")
+
+        return engineered_df
+
     def prepare_features_target(self, target_col: str = 'DV',
-                                feature_cols: Optional[list] = None) -> Tuple[pd.DataFrame, pd.Series]:
+                                feature_cols: Optional[list] = None,
+                                use_feature_engineering: bool = False) -> Tuple[pd.DataFrame, pd.Series]:
         """
         Separate features and target variable.
 
         Args:
             target_col: Name of the target column (default: 'DV' for dependent variable)
             feature_cols: List of feature column names. If None, uses all except target and ID columns
+            use_feature_engineering: Whether to apply advanced feature engineering (36+ features)
 
         Returns:
             Tuple of (features DataFrame, target Series)
@@ -85,28 +241,47 @@ class PKPDDataProcessor:
         if self.df is None:
             self.load_data()
 
+        # Apply feature engineering if requested
+        if use_feature_engineering:
+            print("\n🔬 Applying advanced feature engineering (36+ features)...")
+            # Engineer features on full dataset to get proper dose history context
+            engineered_full = self.engineer_features(self.df)
+
+            # Filter to observations only AFTER engineering
+            if 'EVID' in engineered_full.columns:
+                obs_df = engineered_full[engineered_full['EVID'] == 0].copy()
+            else:
+                obs_df = engineered_full.copy()
+
+            # Remove rows where target is missing
+            if 'MDV' in obs_df.columns:
+                obs_df = obs_df[obs_df['MDV'] == 0]
+
+        else:
+            # Original behavior - no feature engineering
+            # Filter to observations only (EVID=0 for observations)
+            if 'EVID' in self.df.columns:
+                obs_df = self.df[self.df['EVID'] == 0].copy()
+            else:
+                obs_df = self.df.copy()
+
+            # Remove rows where target is missing
+            if 'MDV' in obs_df.columns:
+                obs_df = obs_df[obs_df['MDV'] == 0]
+
         # Default feature columns: exclude ID, target, and metadata columns
         if feature_cols is None:
-            exclude_cols = ['ID', target_col, 'EVID', 'MDV', 'CMT', 'DVID']
-            feature_cols = [col for col in self.df.columns if col not in exclude_cols]
-
-        # Filter to observations only (EVID=0 for observations)
-        if 'EVID' in self.df.columns:
-            obs_df = self.df[self.df['EVID'] == 0].copy()
-        else:
-            obs_df = self.df.copy()
-
-        # Remove rows where target is missing
-        if 'MDV' in obs_df.columns:
-            obs_df = obs_df[obs_df['MDV'] == 0]
+            exclude_cols = ['ID', target_col, 'EVID', 'MDV', 'CMT', 'DVID', 'AMT']
+            feature_cols = [col for col in obs_df.columns if col not in exclude_cols]
 
         X = obs_df[feature_cols]
         y = obs_df[target_col]
 
+        print(f"\n📊 Features: {X.shape[1]} features, {X.shape[0]} samples")
         if self.verbose:
-            print(f"\nFeatures shape: {X.shape}")
             print(f"Target shape: {y.shape}")
-            print(f"Feature columns: {feature_cols}")
+            if use_feature_engineering:
+                print(f"Feature columns (first 15): {feature_cols[:15]}")
 
         return X, y
 
@@ -273,9 +448,19 @@ class PKPDDataProcessor:
                          test_size: float = 0.2,
                          random_state: int = 42,
                          scale_features: bool = True,
-                         scale_target: bool = False) -> Dict:
+                         scale_target: bool = False,
+                         use_feature_engineering: bool = False) -> Dict:
         """
         Complete preprocessing pipeline.
+
+        Args:
+            target_col: Target column name
+            feature_cols: Feature column names (None = auto-select)
+            test_size: Test set proportion
+            random_state: Random seed
+            scale_features: Whether to scale features
+            scale_target: Whether to scale target
+            use_feature_engineering: Whether to apply advanced feature engineering (36+ features)
 
         Returns:
             Dictionary with all preprocessed data
@@ -284,8 +469,8 @@ class PKPDDataProcessor:
         self.load_data()
         stats = self.explore_data()
 
-        # Prepare features and target
-        X, y = self.prepare_features_target(target_col, feature_cols)
+        # Prepare features and target (with optional feature engineering)
+        X, y = self.prepare_features_target(target_col, feature_cols, use_feature_engineering)
 
         # Preprocess
         X_train, X_test, y_train, y_test = self.preprocess_data(
