@@ -47,12 +47,12 @@ class PDPredictionMLP(nn.Module):
         return self.network(x)
 
 
-def prepare_pd_prediction_data(csv_path='Data/QIC2025-EstDat.csv',
+def prepare_pd_mlp_data(csv_path='Data/QIC2025-EstDat.csv',
                                feature_engineering=False,
                                test_size=0.2,
                                random_seed=1712):
     """
-    Prepare data for PD prediction.
+    Prepare data for MLP PD Prediction
 
     Input features: TIME, BW, PK_value, DOSE, COMED
     Output: PD value
@@ -294,7 +294,7 @@ def evaluate_model(model, X, y, device='cpu'):
 
 
 def plot_results(data_dict, train_metrics, test_metrics, train_losses, val_losses,
-                 save_dir='Results/PD_Prediction', n_patients=3, patient_ids=None, random_patients=False, random_seed=1712):
+                 save_dir='Results/PD_MLP', n_patients=3, patient_ids=None, random_patients=False, random_seed=1712):
     """Plot training results and time series predictions.
 
     Args:
@@ -461,7 +461,7 @@ def main():
                        help='Random seed')
     parser.add_argument('--device', type=str, default='cpu',
                        help='Device (cpu or cuda)')
-    parser.add_argument('--save_dir', type=str, default='Results/PD_Prediction',
+    parser.add_argument('--save_dir', type=str, default='Results/PD_MLP',
                        help='Directory to save results')
 
     # Plotting options
@@ -475,7 +475,7 @@ def main():
     args = parser.parse_args()
 
     # Prepare data
-    data_dict = prepare_pd_prediction_data(
+    data_dict = prepare_pd_mlp_data(
         csv_path=args.csv_path,
         feature_engineering=args.feature_engineering,
         test_size=args.test_size,
