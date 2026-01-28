@@ -316,12 +316,12 @@ class PKPDDataProcessor:
         # Scale features
         if scale_features:
             X_train = pd.DataFrame(
-                self.scaler_X.fit_transform(X_train),
+                self.scaler_X.fit_transform(X_train.values),
                 columns=X_train.columns,
                 index=X_train.index
             )
             X_test = pd.DataFrame(
-                self.scaler_X.transform(X_test),
+                self.scaler_X.transform(X_test.values),
                 columns=X_test.columns,
                 index=X_test.index
             )
