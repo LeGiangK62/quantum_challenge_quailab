@@ -73,7 +73,6 @@ Repository for Quantum Challenge 2025 - Team PNU of QUAILAB
 --random_seed       Random seed (default: 1712)
 --stratified_split  Use dose-stratified splitting (default: True)
 --use_perkg         Add per-kg normalized features (default: False)
---combine           Use all data for training (default: False)
 ```
 
 ### Feature Engineering
@@ -97,39 +96,36 @@ Repository for Quantum Challenge 2025 - Team PNU of QUAILAB
 ### Training
 
 ```bash
-# MLP (default)
-python main.py --model mlp --epochs 300 --combine
-
-# MLP with validation split
-python main.py --model mlp --epochs 300 --stratified_split
+# MLP 
+python main.py --model mlp --epochs 300 --
 
 # GNN
-python main.py --model gnn --epochs 300 --gnn_hidden_dim 64 --combine
+python main.py --model gnn --epochs 300 --gnn_hidden_dim 64 
 
 # GNN with attention (GAT)
-python main.py --model gnn --use_attention --epochs 300 --combine
+python main.py --model gnn --use_attention --epochs 300 
 
 # LSTM
-python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --combine
+python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 
 
 # HQCNN (Quantum MLP)
-python main.py --model hqcnn --epochs 300 --hqcnn_num_layers 1 --combine
+python main.py --model hqcnn --epochs 300 --hqcnn_num_layers 1 
 
 # HQGNN (Quantum GNN)
-python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64 --combine
+python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64 
 
 # HQLSTM (Quantum LSTM)
-python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 --combine
+python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 
 ```
 
 ### Training with GPU
 ```bash
-python main.py --model mlp --device cuda --epochs 300 --combine
+python main.py --model mlp --device cuda --epochs 300 
 ```
 
 ### Custom Experiment Name
 ```bash
-python main.py --model gnn --experiment_name my_gnn_exp --epochs 300 --combine
+python main.py --model gnn --experiment_name my_gnn_exp --epochs 300 
 ```
 
 ---
