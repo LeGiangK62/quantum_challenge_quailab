@@ -429,3 +429,213 @@ def prepare_pkpd_data(
     print(f"  Test PD: {len(result['test_pd']['y'])}")
 
     return result
+
+
+# =========================================================
+# LSTM Sequence Data Preparation
+# =========================================================
+def prepare_lstm_sequences(
+    csv_path: str = 'Data/QIC2025-EstDat.csv',
+    test_size: float = 0.1,
+    val_size: float = 0.1,
+    random_state: int = 42,
+    use_perkg: bool = False,
+    time_windows: list = None,
+    half_lives: list = None,
+    add_decay: bool = True,
+    stratified_split: bool = True,
+    combine: bool = True
+) -> Dict:
+    """
+    Prepare sequence data for LSTM models.
+
+    Groups observations by patient and creates padded sequences.
+
+    Returns dict with:
+        - train_sequences, val_sequences, test_sequences: List of patient sequences
+        - Each sequence: {'pk': (X, y, lengths), 'pd': (X, y, lengths)}
+        - scaler_X, scaler_y_pk, scaler_y_pd: Fitted scalers
+    """
+    # Load data
+    df_all, df_obs, df_dose = load_data(csv_path)
+
+    # Feature engineering
+    df_final = engineer_dose_features(
+        df_obs, df_dose,
+        time_windows=time_windows,
+        half_lives=half_lives,
+        add_decay=add_decay
+    )
+
+    # Add per-kg features if requested
+    if use_perkg:
+        df_final = add_perkg_features(df_final, time_windows)
+        print("  Added per-kg features")
+
+    # Build feature list
+    features = build_feature_list(
+        time_windows=time_windows,
+        half_lives=half_lives,
+        add_decay=add_decay,
+        use_perkg=use_perkg
+    )
+
+    print(f"\nTotal features: {len(features)}")
+
+    # Stratified split by dose
+    if stratified_split:
+        split_ids = stratified_dose_split(
+            df_final, df_dose,
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state,
+            combine=combine
+        )
+    else:
+        all_ids = df_final['ID'].unique()
+        rng = np.random.RandomState(random_state)
+        shuffled = rng.permutation(all_ids)
+        n_test = int(len(all_ids) * test_size)
+        n_val = int(len(all_ids) * val_size)
+        split_ids = {
+            'test': shuffled[:n_test],
+            'val': shuffled[n_test:n_test + n_val],
+            'train': shuffled if combine else shuffled[n_test + n_val:]
+        }
+
+    # Separate PK and PD
+    pk_df = df_final[df_final['DVID'] == 1].copy()
+    pd_df = df_final[df_final['DVID'] == 2].copy()
+
+    print(f"\nPK observations: {len(pk_df)}")
+    print(f"PD observations: {len(pd_df)}")
+
+    # Fit scaler on training data only
+    train_mask_pk = pk_df['ID'].isin(split_ids['train'])
+    train_mask_pd = pd_df['ID'].isin(split_ids['train'])
+
+    scaler_X = StandardScaler()
+    scaler_X.fit(pk_df.loc[train_mask_pk, features].values)
+
+    scaler_y_pk = StandardScaler()
+    scaler_y_pk.fit(pk_df.loc[train_mask_pk, ['DV']].values)
+
+    scaler_y_pd = StandardScaler()
+    scaler_y_pd.fit(pd_df.loc[train_mask_pd, ['DV']].values)
+
+    def build_sequences(split_name):
+        """Build padded sequences for a split."""
+        split_subject_ids = split_ids[split_name]
+
+        sequences = []
+        for subject_id in split_subject_ids:
+            # Get PK data for this subject
+            pk_subj = pk_df[pk_df['ID'] == subject_id].sort_values('TIME')
+            pd_subj = pd_df[pd_df['ID'] == subject_id].sort_values('TIME')
+
+            if len(pk_subj) == 0 and len(pd_subj) == 0:
+                continue
+
+            seq = {'id': subject_id}
+
+            if len(pk_subj) > 0:
+                X_pk = scaler_X.transform(pk_subj[features].values)
+                y_pk = pk_subj['DV'].values
+                times_pk = pk_subj['TIME'].values
+                seq['pk'] = {'X': X_pk, 'y': y_pk, 'times': times_pk}
+
+            if len(pd_subj) > 0:
+                X_pd = scaler_X.transform(pd_subj[features].values)
+                y_pd = pd_subj['DV'].values
+                times_pd = pd_subj['TIME'].values
+                seq['pd'] = {'X': X_pd, 'y': y_pd, 'times': times_pd}
+
+            sequences.append(seq)
+
+        return sequences
+
+    result = {
+        'train_sequences': build_sequences('train'),
+        'val_sequences': build_sequences('val'),
+        'test_sequences': build_sequences('test'),
+        'features': features,
+        'scaler_X': scaler_X,
+        'scaler_y_pk': scaler_y_pk,
+        'scaler_y_pd': scaler_y_pd,
+        'n_features': len(features)
+    }
+
+    print(f"\nLSTM sequences prepared:")
+    print(f"  Train: {len(result['train_sequences'])} patients")
+    print(f"  Val: {len(result['val_sequences'])} patients")
+    print(f"  Test: {len(result['test_sequences'])} patients")
+
+    return result
+
+
+def collate_lstm_batch(sequences, device='cpu'):
+    """
+    Collate function for LSTM batches.
+
+    Pads sequences to the same length within a batch.
+
+    Args:
+        sequences: List of sequence dicts from prepare_lstm_sequences
+        device: Target device
+
+    Returns:
+        Batch dict with padded tensors and lengths
+    """
+    import torch
+
+    batch = {
+        'ids': [s['id'] for s in sequences],
+    }
+
+    # Process PK sequences
+    pk_seqs = [s['pk'] for s in sequences if 'pk' in s]
+    if pk_seqs:
+        max_len_pk = max(len(s['X']) for s in pk_seqs)
+        n_features = pk_seqs[0]['X'].shape[1]
+
+        X_pk_padded = torch.zeros(len(pk_seqs), max_len_pk, n_features)
+        y_pk_padded = torch.zeros(len(pk_seqs), max_len_pk)
+        lengths_pk = torch.zeros(len(pk_seqs), dtype=torch.long)
+        mask_pk = torch.zeros(len(pk_seqs), max_len_pk, dtype=torch.bool)
+
+        for i, s in enumerate(pk_seqs):
+            seq_len = len(s['X'])
+            X_pk_padded[i, :seq_len] = torch.FloatTensor(s['X'])
+            y_pk_padded[i, :seq_len] = torch.FloatTensor(s['y'])
+            lengths_pk[i] = seq_len
+            mask_pk[i, :seq_len] = True
+
+        batch['X_pk'] = X_pk_padded.to(device)
+        batch['y_pk'] = y_pk_padded.to(device)
+        batch['lengths_pk'] = lengths_pk.to(device)
+        batch['mask_pk'] = mask_pk.to(device)
+
+    # Process PD sequences
+    pd_seqs = [s['pd'] for s in sequences if 'pd' in s]
+    if pd_seqs:
+        max_len_pd = max(len(s['X']) for s in pd_seqs)
+        n_features = pd_seqs[0]['X'].shape[1]
+
+        X_pd_padded = torch.zeros(len(pd_seqs), max_len_pd, n_features)
+        y_pd_padded = torch.zeros(len(pd_seqs), max_len_pd)
+        lengths_pd = torch.zeros(len(pd_seqs), dtype=torch.long)
+        mask_pd = torch.zeros(len(pd_seqs), max_len_pd, dtype=torch.bool)
+
+        for i, s in enumerate(pd_seqs):
+            seq_len = len(s['X'])
+            X_pd_padded[i, :seq_len] = torch.FloatTensor(s['X'])
+            y_pd_padded[i, :seq_len] = torch.FloatTensor(s['y'])
+            lengths_pd[i] = seq_len
+            mask_pd[i, :seq_len] = True
+
+        batch['X_pd'] = X_pd_padded.to(device)
+        batch['y_pd'] = y_pd_padded.to(device)
+        batch['lengths_pd'] = lengths_pd.to(device)
+        batch['mask_pd'] = mask_pd.to(device)
+
+    return batch

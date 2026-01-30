@@ -518,7 +518,7 @@ class QPDGNNDecoder(nn.Module):
     """Stage 2: GNN for PD prediction using PK predictions + covariates (Quantum version)."""
 
     def __init__(self, pk_embedding_dim, input_dim, hidden_dim=64, num_layers=3,
-                 dropout=0.2, use_attention=False, use_gating=True, n_qubits=4, n_qlayers=1):
+                 dropout=0.2, use_attention=False, use_gating=True, n_qlayers=1):
         super(QPDGNNDecoder, self).__init__()
 
         self.use_attention = use_attention
@@ -554,8 +554,8 @@ class QPDGNNDecoder(nn.Module):
 
         self.dropout = dropout
 
-        # PD predictor head (Quantum)
-        self.pd_predictor = QNN(input_features=hidden_dim, n_qubits=n_qubits, n_layers=n_qlayers)
+        # PD predictor head (HQCNN - uses _hqcnn_circuit)
+        self.pd_predictor = HQCNN(input_features=hidden_dim, num_layers=n_qlayers)
 
         # Residual branch - learns additional corrections
         self.residual_branch = nn.Sequential(
@@ -608,15 +608,136 @@ class QPDGNNDecoder(nn.Module):
         return pd_predictions
 
 
-class HQGNN(nn.Module):
+class LegacyQPDGNNDecoder(nn.Module):
     """
-    Hierarchical Quantum GNN for PK/PD prediction.
-    
-    Uses classical PK-GNN encoder and Quantum PD-GNN decoder.
+    Legacy Stage 2 decoder using QNN (for loading old checkpoints).
+    Uses QNN with pre_net/q_weights/post_net structure.
+    """
+
+    def __init__(self, pk_embedding_dim, input_dim, hidden_dim=64, num_layers=3,
+                 dropout=0.2, use_attention=False, use_gating=True):
+        super(LegacyQPDGNNDecoder, self).__init__()
+
+        self.use_attention = use_attention
+        self.use_gating = use_gating
+
+        combined_dim = pk_embedding_dim + input_dim + 1
+
+        if use_gating:
+            self.gate = nn.Sequential(
+                nn.Linear(combined_dim, hidden_dim),
+                nn.Sigmoid()
+            )
+
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+
+        if use_attention:
+            self.convs.append(GATConv(combined_dim, hidden_dim, heads=4, concat=False))
+        else:
+            self.convs.append(GCNConv(combined_dim, hidden_dim))
+        self.norms.append(LayerNorm(hidden_dim))
+
+        for _ in range(num_layers - 1):
+            if use_attention:
+                self.convs.append(GATConv(hidden_dim, hidden_dim, heads=4, concat=False))
+            else:
+                self.convs.append(GCNConv(hidden_dim, hidden_dim))
+            self.norms.append(LayerNorm(hidden_dim))
+
+        self.dropout = dropout
+
+        # Legacy QNN predictor (matches old checkpoint structure)
+        self.pd_predictor = QNN(input_features=hidden_dim, n_qubits=4, n_layers=1)
+
+        self.residual_branch = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+
+        self.residual_weight = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, x, pk_embeddings, pk_predictions, edge_index, edge_weight=None):
+        combined = torch.cat([x, pk_embeddings, pk_predictions], dim=-1)
+
+        if self.use_gating:
+            gate_values = self.gate(combined)
+
+        h = combined
+        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
+            h_new = conv(h, edge_index, edge_weight=edge_weight)
+            h_new = norm(h_new)
+            h_new = torch.relu(h_new)
+
+            if i == 0 and self.use_gating:
+                h_new = h_new * gate_values
+
+            if i < len(self.convs) - 1:
+                h_new = torch.dropout(h_new, p=self.dropout, train=self.training)
+
+            if i > 0 and h.size(-1) == h_new.size(-1):
+                h = h + h_new
+            else:
+                h = h_new
+
+        pd_main = self.pd_predictor(h)
+        pd_residual = self.residual_branch(combined)
+        pd_predictions = pd_main + self.residual_weight * pd_residual
+
+        return pd_predictions
+
+
+class LegacyHQGNN(nn.Module):
+    """
+    Legacy HQGNN for loading old checkpoints.
+    Uses QNN instead of HQCNN for pd_predictor.
     """
 
     def __init__(self, feature_dim, hidden_dim=64, num_layers_pk=3, num_layers_pd=3,
-                 dropout=0.2, use_attention=False, use_gating=True, n_qubits=4, n_qlayers=1):
+                 dropout=0.2, use_attention=False, use_gating=True):
+        super(LegacyHQGNN, self).__init__()
+
+        self.pk_encoder = PKGNNEncoder(
+            input_dim=feature_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers_pk,
+            dropout=dropout,
+            use_attention=use_attention
+        )
+
+        self.pd_decoder = LegacyQPDGNNDecoder(
+            pk_embedding_dim=hidden_dim,
+            input_dim=feature_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers_pd,
+            dropout=dropout,
+            use_attention=use_attention,
+            use_gating=use_gating
+        )
+
+    def forward(self, data, return_pk=False):
+        x, edge_index = data.x, data.edge_index
+        edge_weight = data.edge_weight if hasattr(data, 'edge_weight') else None
+
+        pk_embeddings, pk_predictions = self.pk_encoder(x, edge_index, edge_weight)
+        pd_predictions = self.pd_decoder(x, pk_embeddings, pk_predictions, edge_index, edge_weight)
+
+        if return_pk:
+            return pd_predictions, pk_predictions
+        return pd_predictions
+
+
+class HQGNN(nn.Module):
+    """
+    Hierarchical Quantum GNN for PK/PD prediction.
+
+    Uses classical PK-GNN encoder and Quantum PD-GNN decoder with HQCNN circuit.
+    """
+
+    def __init__(self, feature_dim, hidden_dim=64, num_layers_pk=3, num_layers_pd=3,
+                 dropout=0.2, use_attention=False, use_gating=True, n_qlayers=1):
         super(HQGNN, self).__init__()
 
         self.pk_encoder = PKGNNEncoder(
@@ -635,7 +756,6 @@ class HQGNN(nn.Module):
             dropout=dropout,
             use_attention=use_attention,
             use_gating=use_gating,
-            n_qubits=n_qubits,
             n_qlayers=n_qlayers
         )
 
@@ -652,3 +772,280 @@ class HQGNN(nn.Module):
         if return_pk:
             return pd_predictions, pk_predictions
         return pd_predictions
+    
+
+# ============================================================
+# Hierarchical HQCNN Wrapper
+# ============================================================
+class HierarchicalHQCNN(nn.Module):
+    """
+    Hierarchical HQCNN for PK/PD prediction.
+
+    Uses separate HQCNN models for PK and PD prediction.
+    PD model receives PK prediction as additional input.
+    """
+
+    def __init__(self, pk_input_dim, pd_input_dim, num_layers=1, mode='dual_stage'):
+        super().__init__()
+        self.mode = mode
+
+        # Separate HQCNN for PK and PD
+        self.pk_model = HQCNN(pk_input_dim, num_layers=num_layers)
+        self.pd_model = HQCNN(pd_input_dim + 1, num_layers=num_layers)  # +1 for PK prediction
+
+    def forward(self, x_pk=None, x_pd=None):
+        """
+        Forward pass.
+
+        Args:
+            x_pk: PK input features [batch, pk_features]
+            x_pd: PD input features [batch, pd_features]
+
+        Returns:
+            dict with 'pk' and/or 'pd' predictions
+        """
+        results = {}
+
+        if x_pk is not None:
+            pk_pred = self.pk_model(x_pk)
+            results['pk'] = pk_pred
+
+        if x_pd is not None:
+            if self.mode == 'dual_stage' and 'pk' in results:
+                # Use PK prediction (gradients flow)
+                pk_for_pd = results['pk']
+            elif self.mode == 'joint' and 'pk' in results:
+                # Detach PK prediction
+                pk_for_pd = results['pk'].detach()
+            else:
+                # No PK available
+                pk_for_pd = torch.zeros(x_pd.size(0), 1, device=x_pd.device)
+
+            x_pd_with_pk = torch.cat([x_pd, pk_for_pd], dim=1)
+            pd_pred = self.pd_model(x_pd_with_pk)
+            results['pd'] = pd_pred
+
+        return results
+
+
+# ============================================================
+# HQLSTM - Hierarchical Quantum LSTM
+# ============================================================
+class QLSTMEncoder(nn.Module):
+    """LSTM encoder with quantum output layer."""
+
+    def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3,
+                 bidirectional=True, n_qlayers=1):
+        super().__init__()
+
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+
+        # Input projection
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+
+        # LSTM
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
+        )
+
+        self.layer_norm = nn.LayerNorm(hidden_dim * self.num_directions)
+        self.dropout = nn.Dropout(dropout)
+
+        # Quantum predictor (HQCNN)
+        self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+
+    def forward(self, x, lengths=None):
+        """
+        Args:
+            x: [batch, seq_len, input_dim]
+            lengths: Sequence lengths
+
+        Returns:
+            embeddings: [batch, seq_len, hidden_dim * num_directions]
+            predictions: [batch, seq_len, 1]
+        """
+        x = torch.relu(self.input_proj(x))
+
+        if lengths is not None:
+            x = nn.utils.rnn.pack_padded_sequence(
+                x, lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+
+        outputs, _ = self.lstm(x)
+
+        if lengths is not None:
+            outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
+
+        outputs = self.layer_norm(outputs)
+        outputs = self.dropout(outputs)
+
+        # Apply quantum predictor to each timestep
+        batch_size, seq_len, hidden_size = outputs.shape
+        flat_outputs = outputs.reshape(-1, hidden_size)
+        predictions = self.predictor(flat_outputs)
+        predictions = predictions.reshape(batch_size, seq_len, 1)
+
+        return outputs, predictions
+
+
+class QPDLSTMDecoder(nn.Module):
+    """LSTM decoder with quantum output for PD prediction."""
+
+    def __init__(self, input_dim, pk_embedding_dim, hidden_dim=128, num_layers=2,
+                 dropout=0.3, bidirectional=True, use_gating=True, n_qlayers=1):
+        super().__init__()
+
+        self.use_gating = use_gating
+        self.num_directions = 2 if bidirectional else 1
+
+        combined_dim = input_dim + pk_embedding_dim + 1
+
+        if use_gating:
+            self.gate = nn.Sequential(
+                nn.Linear(combined_dim, combined_dim),
+                nn.Sigmoid()
+            )
+
+        self.input_proj = nn.Linear(combined_dim, hidden_dim)
+
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
+        )
+
+        self.layer_norm = nn.LayerNorm(hidden_dim * self.num_directions)
+        self.dropout = nn.Dropout(dropout)
+
+        # Quantum predictor
+        self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+
+        # Residual branch (classical)
+        self.residual_branch = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        self.residual_weight = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, x, pk_embeddings, pk_predictions, lengths=None):
+        combined = torch.cat([x, pk_embeddings, pk_predictions], dim=-1)
+
+        if self.use_gating:
+            gate_values = self.gate(combined)
+            combined = combined * gate_values
+
+        h = torch.relu(self.input_proj(combined))
+
+        if lengths is not None:
+            h = nn.utils.rnn.pack_padded_sequence(
+                h, lengths.cpu(), batch_first=True, enforce_sorted=False
+            )
+
+        outputs, _ = self.lstm(h)
+
+        if lengths is not None:
+            outputs, _ = nn.utils.rnn.pad_packed_sequence(outputs, batch_first=True)
+
+        outputs = self.layer_norm(outputs)
+        outputs = self.dropout(outputs)
+
+        # Quantum prediction
+        batch_size, seq_len, hidden_size = outputs.shape
+        flat_outputs = outputs.reshape(-1, hidden_size)
+        pd_main = self.predictor(flat_outputs)
+        pd_main = pd_main.reshape(batch_size, seq_len, 1)
+
+        # Residual
+        flat_combined = combined.reshape(-1, combined.shape[-1])
+        pd_residual = self.residual_branch(flat_combined)
+        pd_residual = pd_residual.reshape(batch_size, seq_len, 1)
+
+        return pd_main + self.residual_weight * pd_residual
+
+
+class HQLSTM(nn.Module):
+    """
+    Hierarchical Quantum LSTM for PK/PD prediction.
+
+    Uses classical LSTM with quantum (HQCNN) output layers.
+    """
+
+    def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3,
+                 bidirectional=True, use_gating=True, mode='dual_stage', n_qlayers=1):
+        super().__init__()
+
+        self.mode = mode
+        self.hidden_dim = hidden_dim
+        self.num_directions = 2 if bidirectional else 1
+
+        # PK encoder
+        self.pk_encoder = QLSTMEncoder(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            bidirectional=bidirectional,
+            n_qlayers=n_qlayers
+        )
+
+        pk_output_dim = hidden_dim * self.num_directions
+
+        # PD decoder
+        self.pd_decoder = QPDLSTMDecoder(
+            input_dim=input_dim,
+            pk_embedding_dim=pk_output_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+            bidirectional=bidirectional,
+            use_gating=use_gating,
+            n_qlayers=n_qlayers
+        )
+
+    def forward(self, x_pk=None, x_pd=None, lengths_pk=None, lengths_pd=None, return_pk=False):
+        results = {}
+
+        # PK prediction
+        if x_pk is not None:
+            pk_embeddings, pk_predictions = self.pk_encoder(x_pk, lengths_pk)
+            results['pk'] = pk_predictions
+            results['pk_embeddings'] = pk_embeddings
+
+        # PD prediction
+        if x_pd is not None:
+            if 'pk_embeddings' in results:
+                pk_emb = results['pk_embeddings']
+                pk_pred = results['pk']
+
+                if self.mode == 'joint':
+                    pk_emb = pk_emb.detach()
+                    pk_pred = pk_pred.detach()
+            else:
+                batch_size, seq_len, _ = x_pd.shape
+                device = x_pd.device
+                pk_emb = torch.zeros(batch_size, seq_len, self.hidden_dim * self.num_directions, device=device)
+                pk_pred = torch.zeros(batch_size, seq_len, 1, device=device)
+
+            pd_predictions = self.pd_decoder(x_pd, pk_emb, pk_pred, lengths_pd)
+            results['pd'] = pd_predictions
+
+        if 'pk_embeddings' in results:
+            del results['pk_embeddings']
+
+        if return_pk and 'pk' in results:
+            return results['pd'], results['pk']
+
+        return results

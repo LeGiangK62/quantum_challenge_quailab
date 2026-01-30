@@ -14,7 +14,7 @@ def get_args():
 
     # ==================== Model Architecture ====================
     parser.add_argument('--model', type=str, default='mlp',
-                       choices=['mlp', 'gnn', 'hqcnn', 'hqgnn'],
+                       choices=['mlp', 'gnn', 'lstm', 'hqcnn', 'hqgnn', 'hqlstm'],
                        help='Model architecture')
     parser.add_argument('--mode', type=str, default='dual_stage',
                        choices=['separate', 'joint', 'dual_stage', 'shared'],
@@ -39,6 +39,14 @@ def get_args():
                        help='Use GAT instead of GCN')
     parser.add_argument('--use_gating', action='store_true', default=True,
                        help='Use gating mechanism in PD decoder')
+
+    # ==================== LSTM Hyperparameters ====================
+    parser.add_argument('--lstm_hidden_dim', type=int, default=128,
+                       help='Hidden dimension for LSTM')
+    parser.add_argument('--lstm_num_layers', type=int, default=2,
+                       help='Number of LSTM layers')
+    parser.add_argument('--lstm_bidirectional', action='store_true', default=True,
+                       help='Use bidirectional LSTM')
 
     # ==================== HQCNN Hyperparameters ====================
     parser.add_argument('--hqcnn_num_layers', type=int, default=1,
@@ -142,7 +150,13 @@ def get_args():
 
     # Auto-generate experiment name if not provided
     if args.experiment_name is None:
-        args.experiment_name = f"{args.model}_{args.mode}_h{args.hidden_dim if args.model == 'mlp' else args.gnn_hidden_dim}"
+        if args.model in ['mlp', 'hqcnn']:
+            hdim = args.hidden_dim
+        elif args.model in ['lstm', 'hqlstm']:
+            hdim = args.lstm_hidden_dim
+        else:
+            hdim = args.gnn_hidden_dim
+        args.experiment_name = f"{args.model}_{args.mode}_h{hdim}"
         if args.use_augmentation:
             args.experiment_name += f"_aug{args.aug_method}"
         if args.combine:
@@ -162,7 +176,8 @@ def print_args(args):
     # Group arguments by category
     categories = {
         'Model': ['model', 'mode', 'hidden_dim', 'n_blocks', 'gnn_hidden_dim',
-                 'num_layers_pk', 'num_layers_pd', 'dropout'],
+                 'num_layers_pk', 'num_layers_pd', 'lstm_hidden_dim', 'lstm_num_layers',
+                 'lstm_bidirectional', 'dropout'],
         'Data': ['csv_path', 'test_size', 'val_size', 'random_seed',
                 'stratified_split', 'use_perkg', 'combine'],
         'Features': ['time_windows', 'half_lives', 'add_decay'],

@@ -54,6 +54,7 @@ def plot_metrics(history, save_path="metrics_plot.png"):
     """
     Plots training and evaluation metrics (MSE, RMSE, MAE, R2) in subplots.
     Separates PK and PD into different figures.
+    Also saves the raw data as .npz files for reproducibility.
 
     Args:
         history (dict): Dictionary containing lists of metric values per epoch.
@@ -67,6 +68,11 @@ def plot_metrics(history, save_path="metrics_plot.png"):
     if save_path:
         base_path, ext = os.path.splitext(save_path)
 
+        # Save raw history data for reproducibility
+        history_data = {k: np.array(v) if isinstance(v, list) else v for k, v in history.items()}
+        np.savez(f"{base_path}_data.npz", **history_data)
+        logger.info(f"Saved training history data to {base_path}_data.npz")
+
     for domain in domains:
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         axes = axes.flatten()
@@ -76,7 +82,7 @@ def plot_metrics(history, save_path="metrics_plot.png"):
             ax = axes[i]
             # Filter keys for this domain and metric
             relevant_keys = [k for k in history.keys() if domain in k and k.endswith(metric)]
-            
+
             # Exclude RMSE from MSE plots
             if metric == "MSE":
                 relevant_keys = [k for k in relevant_keys if not k.endswith("RMSE")]
