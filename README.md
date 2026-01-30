@@ -118,15 +118,6 @@ python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64
 python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 
 ```
 
-### Training with GPU
-```bash
-python main.py --model mlp --device cuda --epochs 300 
-```
-
-### Custom Experiment Name
-```bash
-python main.py --model gnn --experiment_name my_gnn_exp --epochs 300 
-```
 
 ---
 
