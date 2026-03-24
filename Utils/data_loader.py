@@ -157,7 +157,9 @@ def build_feature_list(
         half_lives = [24, 48, 72]
 
     base_features = [
-        'BW', 'COMED', 'DOSE', 'TIME',
+        'BW', 
+        # 'COMED', 
+        'DOSE', 'TIME',
         'TSLD', 'LAST_DOSE_TIME', 'LAST_DOSE_AMT',
         'N_DOSES_UP_TO_T', 'CUM_DOSE_UP_TO_T',
         'TIME_SQUARED', 'TIME_LOG'

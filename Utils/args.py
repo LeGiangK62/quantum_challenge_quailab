@@ -53,7 +53,7 @@ def get_args():
                        help='Number of quantum layers for HQCNN')
 
     # ==================== Data ====================
-    parser.add_argument('--csv_path', type=str, default='Data/QIC2025-EstDat.csv',
+    parser.add_argument('--csv_path', type=str, default='QIC2025-EstDat',
                        help='Path to data CSV file')
     parser.add_argument('--test_size', type=float, default=0.1,
                        help='Test set fraction')

@@ -49,6 +49,7 @@ def main():
     args = get_args()
     print_args(args)
 
+    csv_data_path = 'Data/' + args.csv_path + '.csv'
     # Create save directory
     timestamp = time.strftime('%y_%m_%d_%H_%M_%S')
     save_dir = os.path.join(args.save_dir, f"{timestamp}_{args.experiment_name}")
@@ -72,7 +73,7 @@ def main():
         if args.combine:
             # Use all data for training (no split)
             data = prepare_pkpd_data(
-                csv_path=args.csv_path,
+                csv_path=csv_data_path,
                 test_size=args.test_size,
                 val_size=args.val_size,
                 random_state=args.random_seed,
@@ -90,7 +91,7 @@ def main():
             data['test_pd'] = data['train_pd']
         else:
             data = prepare_pkpd_data(
-                csv_path=args.csv_path,
+                csv_path=csv_data_path,
                 test_size=args.test_size,
                 val_size=args.val_size,
                 random_state=args.random_seed,
@@ -217,7 +218,7 @@ def main():
         # Prepare data (same as MLP)
         if args.combine:
             data = prepare_pkpd_data(
-                csv_path=args.csv_path,
+                csv_path=csv_data_path,
                 test_size=args.test_size,
                 val_size=args.val_size,
                 random_state=args.random_seed,
@@ -234,7 +235,7 @@ def main():
             data['test_pd'] = data['train_pd']
         else:
             data = prepare_pkpd_data(
-                csv_path=args.csv_path,
+                csv_path=csv_data_path,
                 test_size=args.test_size,
                 val_size=args.val_size,
                 random_state=args.random_seed,
@@ -285,7 +286,7 @@ def main():
 
         # Prepare LSTM sequence data
         data = prepare_lstm_sequences(
-            csv_path=args.csv_path,
+            csv_path=csv_data_path,
             test_size=args.test_size,
             val_size=args.val_size,
             random_state=args.random_seed,
