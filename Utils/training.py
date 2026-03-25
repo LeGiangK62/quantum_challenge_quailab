@@ -457,9 +457,9 @@ def train_lstm(model, data, args, device):
                     lengths_pk=batch['lengths_pk'], lengths_pd=batch['lengths_pd']
                 )
 
-                pk_pred = results['pk'][batch['mask_pk']]
+                pk_pred = results['pk'].squeeze(-1)[batch['mask_pk']]
                 pk_tgt = batch['y_pk'][batch['mask_pk']]
-                pd_pred = results['pd'][batch['mask_pd']]
+                pd_pred = results['pd'].squeeze(-1)[batch['mask_pd']]
                 pd_tgt = batch['y_pd'][batch['mask_pd']]
 
                 loss_pk = compute_loss(pk_pred, pk_tgt, args.loss_type_pk, args.quantile_q, args.hybrid_lambda)
@@ -497,9 +497,9 @@ def train_lstm(model, data, args, device):
                         x_pk=batch['X_pk'], x_pd=batch['X_pd'],
                         lengths_pk=batch['lengths_pk'], lengths_pd=batch['lengths_pd']
                     )
-                    val_pk_preds.append(results['pk'][batch['mask_pk']].cpu())
+                    val_pk_preds.append(results['pk'].squeeze(-1)[batch['mask_pk']].cpu())
                     val_pk_targets.append(batch['y_pk'][batch['mask_pk']].cpu())
-                    val_pd_preds.append(results['pd'][batch['mask_pd']].cpu())
+                    val_pd_preds.append(results['pd'].squeeze(-1)[batch['mask_pd']].cpu())
                     val_pd_targets.append(batch['y_pd'][batch['mask_pd']].cpu())
 
         if val_pk_preds:
@@ -562,9 +562,9 @@ def evaluate_lstm(model, sequences, device):
                     x_pk=batch['X_pk'], x_pd=batch['X_pd'],
                     lengths_pk=batch['lengths_pk'], lengths_pd=batch['lengths_pd']
                 )
-                pk_preds_list.append(results['pk'][batch['mask_pk']].cpu())
+                pk_preds_list.append(results['pk'].squeeze(-1)[batch['mask_pk']].cpu())
                 pk_targets_list.append(batch['y_pk'][batch['mask_pk']].cpu())
-                pd_preds_list.append(results['pd'][batch['mask_pd']].cpu())
+                pd_preds_list.append(results['pd'].squeeze(-1)[batch['mask_pd']].cpu())
                 pd_targets_list.append(batch['y_pd'][batch['mask_pd']].cpu())
 
     if pk_preds_list:

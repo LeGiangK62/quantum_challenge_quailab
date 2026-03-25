@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import pennylane as qml
 import numpy as np
 from torch_geometric.nn import GCNConv, GATConv, LayerNorm
@@ -1026,6 +1027,9 @@ class HQLSTM(nn.Module):
 
         # PD prediction
         if x_pd is not None:
+            batch_size, pd_seq_len, _ = x_pd.shape
+            device = x_pd.device
+
             if 'pk_embeddings' in results:
                 pk_emb = results['pk_embeddings']
                 pk_pred = results['pk']
@@ -1033,11 +1037,19 @@ class HQLSTM(nn.Module):
                 if self.mode == 'joint':
                     pk_emb = pk_emb.detach()
                     pk_pred = pk_pred.detach()
+
+                # Align PK sequence length to PD sequence length if they differ
+                pk_seq_len = pk_emb.shape[1]
+                if pk_seq_len != pd_seq_len:
+                    pk_emb = F.interpolate(
+                        pk_emb.transpose(1, 2), size=pd_seq_len, mode='linear', align_corners=False
+                    ).transpose(1, 2)
+                    pk_pred = F.interpolate(
+                        pk_pred.transpose(1, 2), size=pd_seq_len, mode='linear', align_corners=False
+                    ).transpose(1, 2)
             else:
-                batch_size, seq_len, _ = x_pd.shape
-                device = x_pd.device
-                pk_emb = torch.zeros(batch_size, seq_len, self.hidden_dim * self.num_directions, device=device)
-                pk_pred = torch.zeros(batch_size, seq_len, 1, device=device)
+                pk_emb = torch.zeros(batch_size, pd_seq_len, self.hidden_dim * self.num_directions, device=device)
+                pk_pred = torch.zeros(batch_size, pd_seq_len, 1, device=device)
 
             pd_predictions = self.pd_decoder(x_pd, pk_emb, pk_pred, lengths_pd)
             results['pd'] = pd_predictions

@@ -97,13 +97,13 @@ Repository for Quantum Challenge 2025 - Team PNU of QUAILAB
 
 ```bash
 # MLP 
-python main.py --model mlp --epochs 300 --
+python main.py --model mlp --epochs 300
 
 # GNN
 python main.py --model gnn --epochs 300 --gnn_hidden_dim 64 
 
-# GNN with attention (GAT)
-python main.py --model gnn --use_attention --epochs 300 
+# # GNN with attention (GAT)
+# python main.py --model gnn --use_attention --epochs 300 
 
 # LSTM
 python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 
@@ -117,7 +117,18 @@ python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64
 # HQLSTM (Quantum LSTM)
 python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 
 ```
+```bash
 
+### Final Data
+python main.py --model mlp --epochs 300 --csv_path UpdatedEstData
+python main.py --model gnn --epochs 300 --gnn_hidden_dim 64 --csv_path UpdatedEstData
+# python main.py --model gnn --use_attention --epochs 300 --csv_path UpdatedEstData
+python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --csv_path UpdatedEstData
+
+python main.py --model hqcnn --epochs 300 --hqcnn_num_layers 1 --csv_path UpdatedEstData
+python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64 --csv_path UpdatedEstData
+python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 --csv_path UpdatedEstData
+```
 
 ---
 

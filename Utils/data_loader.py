@@ -580,6 +580,8 @@ def collate_lstm_batch(sequences, device='cpu'):
     Collate function for LSTM batches.
 
     Pads sequences to the same length within a batch.
+    Ensures PK and PD tensors are patient-aligned (same batch order).
+    For patients without PK data (placebo), PK tensors are zero-filled.
 
     Args:
         sequences: List of sequence dicts from prepare_lstm_sequences
@@ -590,50 +592,73 @@ def collate_lstm_batch(sequences, device='cpu'):
     """
     import torch
 
+    batch_size = len(sequences)
     batch = {
         'ids': [s['id'] for s in sequences],
     }
 
-    # Process PK sequences
-    pk_seqs = [s['pk'] for s in sequences if 'pk' in s]
-    if pk_seqs:
-        max_len_pk = max(len(s['X']) for s in pk_seqs)
-        n_features = pk_seqs[0]['X'].shape[1]
+    # Determine n_features and max lengths across all patients
+    has_any_pk = any('pk' in s for s in sequences)
+    has_any_pd = any('pd' in s for s in sequences)
 
-        X_pk_padded = torch.zeros(len(pk_seqs), max_len_pk, n_features)
-        y_pk_padded = torch.zeros(len(pk_seqs), max_len_pk)
-        lengths_pk = torch.zeros(len(pk_seqs), dtype=torch.long)
-        mask_pk = torch.zeros(len(pk_seqs), max_len_pk, dtype=torch.bool)
+    if not has_any_pk and not has_any_pd:
+        return batch
 
-        for i, s in enumerate(pk_seqs):
-            seq_len = len(s['X'])
-            X_pk_padded[i, :seq_len] = torch.FloatTensor(s['X'])
-            y_pk_padded[i, :seq_len] = torch.FloatTensor(s['y'])
-            lengths_pk[i] = seq_len
-            mask_pk[i, :seq_len] = True
+    # Get n_features from any available sequence
+    n_features = None
+    for s in sequences:
+        if 'pk' in s:
+            n_features = s['pk']['X'].shape[1]
+            break
+        if 'pd' in s:
+            n_features = s['pd']['X'].shape[1]
+            break
+
+    # Process PK: aligned to all patients, zero-fill for those without PK
+    if has_any_pk or has_any_pd:
+        # We need PK tensors aligned with PD for the hierarchical model
+        max_len_pk = max((len(s['pk']['X']) for s in sequences if 'pk' in s), default=1)
+
+        X_pk_padded = torch.zeros(batch_size, max_len_pk, n_features)
+        y_pk_padded = torch.zeros(batch_size, max_len_pk)
+        lengths_pk = torch.zeros(batch_size, dtype=torch.long)
+        mask_pk = torch.zeros(batch_size, max_len_pk, dtype=torch.bool)
+
+        for i, s in enumerate(sequences):
+            if 'pk' in s:
+                seq_len = len(s['pk']['X'])
+                X_pk_padded[i, :seq_len] = torch.FloatTensor(s['pk']['X'])
+                y_pk_padded[i, :seq_len] = torch.FloatTensor(s['pk']['y'])
+                lengths_pk[i] = seq_len
+                mask_pk[i, :seq_len] = True
+            else:
+                # Placebo patient: no PK data, keep zeros
+                # Set length to 1 so LSTM pack_padded_sequence doesn't fail on 0
+                lengths_pk[i] = 1
 
         batch['X_pk'] = X_pk_padded.to(device)
         batch['y_pk'] = y_pk_padded.to(device)
         batch['lengths_pk'] = lengths_pk.to(device)
         batch['mask_pk'] = mask_pk.to(device)
 
-    # Process PD sequences
-    pd_seqs = [s['pd'] for s in sequences if 'pd' in s]
-    if pd_seqs:
-        max_len_pd = max(len(s['X']) for s in pd_seqs)
-        n_features = pd_seqs[0]['X'].shape[1]
+    # Process PD: aligned to all patients
+    if has_any_pd:
+        max_len_pd = max((len(s['pd']['X']) for s in sequences if 'pd' in s), default=1)
 
-        X_pd_padded = torch.zeros(len(pd_seqs), max_len_pd, n_features)
-        y_pd_padded = torch.zeros(len(pd_seqs), max_len_pd)
-        lengths_pd = torch.zeros(len(pd_seqs), dtype=torch.long)
-        mask_pd = torch.zeros(len(pd_seqs), max_len_pd, dtype=torch.bool)
+        X_pd_padded = torch.zeros(batch_size, max_len_pd, n_features)
+        y_pd_padded = torch.zeros(batch_size, max_len_pd)
+        lengths_pd = torch.zeros(batch_size, dtype=torch.long)
+        mask_pd = torch.zeros(batch_size, max_len_pd, dtype=torch.bool)
 
-        for i, s in enumerate(pd_seqs):
-            seq_len = len(s['X'])
-            X_pd_padded[i, :seq_len] = torch.FloatTensor(s['X'])
-            y_pd_padded[i, :seq_len] = torch.FloatTensor(s['y'])
-            lengths_pd[i] = seq_len
-            mask_pd[i, :seq_len] = True
+        for i, s in enumerate(sequences):
+            if 'pd' in s:
+                seq_len = len(s['pd']['X'])
+                X_pd_padded[i, :seq_len] = torch.FloatTensor(s['pd']['X'])
+                y_pd_padded[i, :seq_len] = torch.FloatTensor(s['pd']['y'])
+                lengths_pd[i] = seq_len
+                mask_pd[i, :seq_len] = True
+            else:
+                lengths_pd[i] = 1
 
         batch['X_pd'] = X_pd_padded.to(device)
         batch['y_pd'] = y_pd_padded.to(device)

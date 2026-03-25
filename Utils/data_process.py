@@ -80,8 +80,9 @@ def prepare_gnn_data(args):
     from sklearn.model_selection import train_test_split
 
     logger.info("Preparing GNN graph data...")
+    csv_data_path = 'Data/' + args.csv_path + '.csv'
 
-    df = pd.read_csv(args.csv_path)
+    df = pd.read_csv(csv_data_path)
     df.columns = [c.strip().upper() for c in df.columns]
 
     # Filter observations
@@ -92,7 +93,9 @@ def prepare_gnn_data(args):
     logger.info(f"Total observations: {len(df)}")
 
     # Feature engineering
-    base_features = ['TIME', 'BW', 'DOSE', 'COMED']
+    base_features = ['TIME', 'BW', 'DOSE', 
+                    #  'COMED'
+                     ]
     if args.add_decay:
         for hl in args.half_lives:
             df[f'DECAY_HL{hl}h'] = np.exp(-np.log(2) / hl * df['TIME'])

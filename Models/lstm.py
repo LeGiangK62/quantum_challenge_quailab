@@ -305,6 +305,9 @@ class HierarchicalPKPDLSTM(nn.Module):
 
         # Stage 2: PD prediction
         if x_pd is not None:
+            batch_size, pd_seq_len, _ = x_pd.shape
+            device = x_pd.device
+
             if 'pk_embeddings' in results:
                 pk_emb = results['pk_embeddings']
                 pk_pred = results['pk']
@@ -312,12 +315,22 @@ class HierarchicalPKPDLSTM(nn.Module):
                 if self.mode == 'joint':
                     pk_emb = pk_emb.detach()
                     pk_pred = pk_pred.detach()
+
+                # Align PK sequence length to PD sequence length if they differ
+                pk_seq_len = pk_emb.shape[1]
+                if pk_seq_len != pd_seq_len:
+                    # Interpolate PK embeddings/predictions to match PD time steps
+                    # [batch, seq, feat] -> [batch, feat, seq] for interpolate
+                    pk_emb = F.interpolate(
+                        pk_emb.transpose(1, 2), size=pd_seq_len, mode='linear', align_corners=False
+                    ).transpose(1, 2)
+                    pk_pred = F.interpolate(
+                        pk_pred.transpose(1, 2), size=pd_seq_len, mode='linear', align_corners=False
+                    ).transpose(1, 2)
             else:
                 # No PK available - use zeros
-                batch_size, seq_len, _ = x_pd.shape
-                device = x_pd.device
-                pk_emb = torch.zeros(batch_size, seq_len, self.hidden_dim * self.num_directions, device=device)
-                pk_pred = torch.zeros(batch_size, seq_len, 1, device=device)
+                pk_emb = torch.zeros(batch_size, pd_seq_len, self.hidden_dim * self.num_directions, device=device)
+                pk_pred = torch.zeros(batch_size, pd_seq_len, 1, device=device)
 
             pd_predictions = self.pd_decoder(x_pd, pk_emb, pk_pred, lengths_pd)
             results['pd'] = pd_predictions
