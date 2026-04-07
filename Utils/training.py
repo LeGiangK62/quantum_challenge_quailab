@@ -195,6 +195,7 @@ def train_gnn(model, train_data, val_data, args, device):
 
     model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=25, factor=0.5)
 
     history = {
         'Epoch': [],
@@ -239,6 +240,7 @@ def train_gnn(model, train_data, val_data, args, device):
 
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
             train_pk_preds.append(pk_preds.detach().cpu())
@@ -282,6 +284,9 @@ def train_gnn(model, train_data, val_data, args, device):
 
         val_pk_metrics = calculate_metrics(val_pk_targets, val_pk_preds)
         val_pd_metrics = calculate_metrics(val_pd_targets, val_pd_preds)
+
+        # Step LR scheduler based on val PD RMSE
+        scheduler.step(val_pd_metrics['RMSE'])
 
         # Update history
         history['Epoch'].append(epoch + 1)
@@ -355,6 +360,188 @@ def evaluate_mlp(model, data_loader, device):
     pk_targets = torch.cat(pk_targets).numpy().flatten()
     pd_preds = torch.cat(pd_preds).numpy().flatten()
     pd_targets = torch.cat(pd_targets).numpy().flatten()
+
+    pk_metrics = calculate_metrics(pk_targets, pk_preds)
+    pd_metrics = calculate_metrics(pd_targets, pd_preds)
+
+    return {
+        'pk': {**pk_metrics, 'predictions': pk_preds, 'targets': pk_targets},
+        'pd': {**pd_metrics, 'predictions': pd_preds, 'targets': pd_targets},
+    }
+
+
+# ============================================================
+# V2: Training & Evaluation with Target Transforms (log_pk, sqrt_pd)
+# ============================================================
+def train_mlp_v2(model, train_loader, val_loader, args, device, pk_transform='none', pd_transform='none'):
+    """
+    Train hierarchical MLP with target transforms.
+    Loss is computed in transformed space; logged metrics are in original scale.
+    """
+    from Utils.data_loader import inverse_target_transform
+
+    model = model.to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=25, factor=0.5)
+
+    history = {
+        'Epoch': [],
+        'Train PK_MSE': [], 'Train PK_RMSE': [], 'Train PK_MAE': [], 'Train PK_R2': [],
+        'Train PD_MSE': [], 'Train PD_RMSE': [], 'Train PD_MAE': [], 'Train PD_R2': [],
+        'Val PK_MSE': [], 'Val PK_RMSE': [], 'Val PK_MAE': [], 'Val PK_R2': [],
+        'Val PD_MSE': [], 'Val PD_RMSE': [], 'Val PD_MAE': [], 'Val PD_R2': [],
+    }
+
+    best_val_loss = float('inf')
+    best_model_state = None
+    patience_counter = 0
+
+    logger.info(f"Training MLP V2 ({args.mode.upper()} mode)")
+    logger.info(f"PK transform: {pk_transform}, PD transform: {pd_transform}")
+    logger.info(f"Epochs: {args.epochs}, Batch size: {args.batch_size}, LR: {args.learning_rate}")
+    logger.info(f"PK loss: {args.loss_type_pk}, PD loss: {args.loss_type_pd}")
+
+    def inv_pk(t):
+        return torch.tensor(inverse_target_transform(t.numpy(), pk_transform), dtype=torch.float32)
+
+    def inv_pd(t):
+        return torch.tensor(inverse_target_transform(t.numpy(), pd_transform), dtype=torch.float32)
+
+    for epoch in range(args.epochs):
+        model.train()
+
+        train_pk_preds, train_pk_targets = [], []
+        train_pd_preds, train_pd_targets = [], []
+
+        for batch in train_loader:
+            pk_x = batch['pk_x'].to(device)
+            pk_y = batch['pk_y'].to(device)
+            pd_x = batch['pd_x'].to(device)
+            pd_y = batch['pd_y'].to(device)
+
+            results = model(pk_x, pd_x)
+
+            loss_pk = compute_loss(results['pk'], pk_y, args.loss_type_pk,
+                                   args.quantile_q, args.hybrid_lambda)
+            loss_pd = compute_loss(results['pd'], pd_y, args.loss_type_pd,
+                                   args.quantile_q, args.hybrid_lambda)
+            loss = args.pk_loss_weight * loss_pk + args.pd_loss_weight * loss_pd
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            train_pk_preds.append(results['pk'].detach().cpu())
+            train_pk_targets.append(pk_y.detach().cpu())
+            train_pd_preds.append(results['pd'].detach().cpu())
+            train_pd_targets.append(pd_y.detach().cpu())
+
+        # Inverse transform for metrics in original scale
+        train_pk_preds_orig = inv_pk(torch.cat(train_pk_preds))
+        train_pk_targets_orig = inv_pk(torch.cat(train_pk_targets))
+        train_pd_preds_orig = inv_pd(torch.cat(train_pd_preds))
+        train_pd_targets_orig = inv_pd(torch.cat(train_pd_targets))
+
+        train_pk_metrics = calculate_metrics(train_pk_targets_orig, train_pk_preds_orig)
+        train_pd_metrics = calculate_metrics(train_pd_targets_orig, train_pd_preds_orig)
+
+        # Validation
+        model.eval()
+        val_pk_preds, val_pk_targets = [], []
+        val_pd_preds, val_pd_targets = [], []
+
+        with torch.no_grad():
+            for batch in val_loader:
+                pk_x = batch['pk_x'].to(device)
+                pk_y = batch['pk_y'].to(device)
+                pd_x = batch['pd_x'].to(device)
+                pd_y = batch['pd_y'].to(device)
+
+                results = model(pk_x, pd_x)
+
+                val_pk_preds.append(results['pk'].cpu())
+                val_pk_targets.append(pk_y.cpu())
+                val_pd_preds.append(results['pd'].cpu())
+                val_pd_targets.append(pd_y.cpu())
+
+        val_pk_preds_orig = inv_pk(torch.cat(val_pk_preds))
+        val_pk_targets_orig = inv_pk(torch.cat(val_pk_targets))
+        val_pd_preds_orig = inv_pd(torch.cat(val_pd_preds))
+        val_pd_targets_orig = inv_pd(torch.cat(val_pd_targets))
+
+        val_pk_metrics = calculate_metrics(val_pk_targets_orig, val_pk_preds_orig)
+        val_pd_metrics = calculate_metrics(val_pd_targets_orig, val_pd_preds_orig)
+
+        # Update history
+        history['Epoch'].append(epoch + 1)
+        for k, v in train_pk_metrics.items():
+            history[f'Train PK_{k}'].append(v)
+        for k, v in train_pd_metrics.items():
+            history[f'Train PD_{k}'].append(v)
+        for k, v in val_pk_metrics.items():
+            history[f'Val PK_{k}'].append(v)
+        for k, v in val_pd_metrics.items():
+            history[f'Val PD_{k}'].append(v)
+
+        scheduler.step(val_pd_metrics['MSE'])
+
+        if (epoch + 1) % args.log_interval == 0:
+            log_metrics(epoch + 1, "Train PK", train_pk_metrics)
+            log_metrics(epoch + 1, "Train PD", train_pd_metrics)
+            log_metrics(epoch + 1, "Val PK", val_pk_metrics)
+            log_metrics(epoch + 1, "Val PD", val_pd_metrics)
+
+        # Early stopping (on original scale RMSE)
+        if not args.no_early_stopping:
+            current_val_loss = val_pd_metrics['RMSE']
+            if current_val_loss < best_val_loss - args.early_stopping_min_delta:
+                best_val_loss = current_val_loss
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+
+            if patience_counter >= args.early_stopping_patience:
+                logger.info(f"Early stopping at epoch {epoch + 1}")
+                if best_model_state is not None:
+                    model.load_state_dict(best_model_state)
+                break
+
+    logger.info(f"Best Val PD RMSE (original scale): {best_val_loss:.4f}")
+    return model, history
+
+
+def evaluate_mlp_v2(model, data_loader, device, pk_transform='none', pd_transform='none'):
+    """
+    Evaluate MLP model with inverse-transform to original scale.
+    """
+    from Utils.data_loader import inverse_target_transform
+    import numpy as np
+
+    model.eval()
+
+    pk_preds, pk_targets = [], []
+    pd_preds, pd_targets = [], []
+
+    with torch.no_grad():
+        for batch in data_loader:
+            pk_x = batch['pk_x'].to(device)
+            pk_y = batch['pk_y'].to(device)
+            pd_x = batch['pd_x'].to(device)
+            pd_y = batch['pd_y'].to(device)
+
+            results = model(pk_x, pd_x)
+
+            pk_preds.append(results['pk'].cpu())
+            pk_targets.append(pk_y.cpu())
+            pd_preds.append(results['pd'].cpu())
+            pd_targets.append(pd_y.cpu())
+
+    # Inverse transform to original scale
+    pk_preds = inverse_target_transform(torch.cat(pk_preds).numpy().flatten(), pk_transform)
+    pk_targets = inverse_target_transform(torch.cat(pk_targets).numpy().flatten(), pk_transform)
+    pd_preds = inverse_target_transform(torch.cat(pd_preds).numpy().flatten(), pd_transform)
+    pd_targets = inverse_target_transform(torch.cat(pd_targets).numpy().flatten(), pd_transform)
 
     pk_metrics = calculate_metrics(pk_targets, pk_preds)
     pd_metrics = calculate_metrics(pd_targets, pd_preds)

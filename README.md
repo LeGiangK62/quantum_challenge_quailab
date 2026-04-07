@@ -121,7 +121,15 @@ python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128
 
 ### Final Data
 python main.py --model mlp --epochs 300 --csv_path UpdatedEstData
-python main.py --model gnn --epochs 300 --gnn_hidden_dim 64 --csv_path UpdatedEstData
+
+python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 \
+     --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping 
+   
+
+
+python main.py --model gnn  --gnn_hidden_dim 64 \
+    --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping 
+
 # python main.py --model gnn --use_attention --epochs 300 --csv_path UpdatedEstData
 python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --csv_path UpdatedEstData
 

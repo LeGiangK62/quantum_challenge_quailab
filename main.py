@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader as TorchDataLoader
 from Utils.args import get_args, print_args
 from Utils.data_loader import prepare_pkpd_data, prepare_lstm_sequences, collate_lstm_batch
 from Utils.data_process import PKPDDataset, prepare_gnn_data, collate_pkpd
-from Utils.training import train_gnn, train_mlp, train_lstm, evaluate_gnn, evaluate_mlp, evaluate_lstm
+from Utils.training import train_gnn, train_mlp, train_lstm, evaluate_gnn, evaluate_mlp, evaluate_lstm, train_mlp_v2, evaluate_mlp_v2
 from Utils.plot import plot_gnn_patient_timeseries, plot_patient_timeseries, plot_predictions
 from Utils.log import plot_metrics, logger
 from Models.mlp import HierarchicalPKPDMLP
@@ -69,6 +69,11 @@ def main():
         logger.info("TRAINING HIERARCHICAL MLP")
         logger.info("=" * 60)
 
+        # Determine target transforms
+        pk_transform = 'log' if args.log_pk else 'none'
+        pd_transform = 'sqrt' if args.sqrt_pd else 'none'
+        use_v2 = args.log_pk or args.sqrt_pd
+
         # Prepare MLP data
         if args.combine:
             # Use all data for training (no split)
@@ -82,6 +87,8 @@ def main():
                 half_lives=args.half_lives,
                 add_decay=args.add_decay,
                 stratified_split=False,
+                pk_transform=pk_transform,
+                pd_transform=pd_transform,
             )
             logger.info("COMBINE MODE: Using ALL data for training")
             # Use same data for train/val/test
@@ -100,6 +107,8 @@ def main():
                 half_lives=args.half_lives,
                 add_decay=args.add_decay,
                 stratified_split=args.stratified_split,
+                pk_transform=pk_transform,
+                pd_transform=pd_transform,
             )
 
         # Create datasets
@@ -127,16 +136,24 @@ def main():
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         logger.info(f"Total parameters: {total_params:,}")
 
-        # Train
-        model, history = train_mlp(model, train_loader, val_loader, args, device)
-
-        # Evaluate
-        logger.info("=" * 60)
-        logger.info("EVALUATION")
-        logger.info("=" * 60)
-
-        train_results = evaluate_mlp(model, train_loader, device)
-        test_results = evaluate_mlp(model, test_loader, device)
+        # Train & Evaluate
+        if use_v2:
+            model, history = train_mlp_v2(model, train_loader, val_loader, args, device,
+                                          pk_transform=pk_transform, pd_transform=pd_transform)
+            logger.info("=" * 60)
+            logger.info("EVALUATION (original scale)")
+            logger.info("=" * 60)
+            train_results = evaluate_mlp_v2(model, train_loader, device,
+                                            pk_transform=pk_transform, pd_transform=pd_transform)
+            test_results = evaluate_mlp_v2(model, test_loader, device,
+                                           pk_transform=pk_transform, pd_transform=pd_transform)
+        else:
+            model, history = train_mlp(model, train_loader, val_loader, args, device)
+            logger.info("=" * 60)
+            logger.info("EVALUATION")
+            logger.info("=" * 60)
+            train_results = evaluate_mlp(model, train_loader, device)
+            test_results = evaluate_mlp(model, test_loader, device)
 
     elif args.model == 'gnn':
         logger.info("=" * 60)

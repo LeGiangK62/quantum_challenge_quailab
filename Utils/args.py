@@ -104,6 +104,12 @@ def get_args():
     parser.add_argument('--hybrid_lambda', type=float, default=0.5,
                        help='Weight for MSE in hybrid loss')
 
+    # ==================== Target Transforms ====================
+    parser.add_argument('--log_pk', action='store_true', default=False,
+                       help='Apply log1p transform to PK targets')
+    parser.add_argument('--sqrt_pd', action='store_true', default=False,
+                       help='Apply sqrt transform to PD targets')
+
     # ==================== Data Augmentation ====================
     parser.add_argument('--use_augmentation', action='store_true', default=False,
                        help='Enable data augmentation')

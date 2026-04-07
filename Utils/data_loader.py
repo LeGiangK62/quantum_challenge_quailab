@@ -11,6 +11,29 @@ from sklearn.preprocessing import StandardScaler
 
 
 # =========================================================
+# Target Transforms (log_pk, sqrt_pd)
+# =========================================================
+def apply_target_transform(y: np.ndarray, transform: str) -> np.ndarray:
+    """Apply transform to target values."""
+    if transform == 'log':
+        return np.log1p(y)
+    elif transform == 'sqrt':
+        return np.sqrt(np.maximum(y, 0))
+    else:
+        return y
+
+
+def inverse_target_transform(y: np.ndarray, transform: str) -> np.ndarray:
+    """Inverse transform predictions back to original scale."""
+    if transform == 'log':
+        return np.expm1(y)
+    elif transform == 'sqrt':
+        return np.square(y)
+    else:
+        return y
+
+
+# =========================================================
 # Data Loading
 # =========================================================
 def load_data(path: str = "Data/QIC2025-EstDat.csv") -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -316,7 +339,9 @@ def prepare_pkpd_data(
     half_lives: list = None,
     add_decay: bool = True,
     stratified_split: bool = True,
-    combine: bool = True
+    combine: bool = True,
+    pk_transform: str = 'none',
+    pd_transform: str = 'none',
 ) -> Dict:
     """
     Complete data preparation pipeline matching old code.
@@ -396,30 +421,34 @@ def prepare_pkpd_data(
     scaler_y_pd.fit(pd_df.loc[train_mask_pd, ['DV']].values)
 
     # Prepare datasets
-    def prepare_split(df, split_name):
+    def prepare_split(df, split_name, target_transform='none'):
         mask = df['ID'].isin(split_ids[split_name])
         sub_df = df[mask].copy()
 
         X = scaler_X.transform(sub_df[features].values)
         y = sub_df['DV'].values
+        y_raw = y.copy()
+        y = apply_target_transform(y, target_transform)
         ids = sub_df['ID'].values
         times = sub_df['TIME'].values
 
-        return {'X': X, 'y': y, 'ids': ids, 'times': times}
+        return {'X': X, 'y': y, 'y_raw': y_raw, 'ids': ids, 'times': times}
 
     result = {
-        'train_pk': prepare_split(pk_df, 'train'),
-        'val_pk': prepare_split(pk_df, 'val'),
-        'test_pk': prepare_split(pk_df, 'test'),
-        'train_pd': prepare_split(pd_df, 'train'),
-        'val_pd': prepare_split(pd_df, 'val'),
-        'test_pd': prepare_split(pd_df, 'test'),
+        'train_pk': prepare_split(pk_df, 'train', pk_transform),
+        'val_pk': prepare_split(pk_df, 'val', pk_transform),
+        'test_pk': prepare_split(pk_df, 'test', pk_transform),
+        'train_pd': prepare_split(pd_df, 'train', pd_transform),
+        'val_pd': prepare_split(pd_df, 'val', pd_transform),
+        'test_pd': prepare_split(pd_df, 'test', pd_transform),
         'pk_features': features,
         'pd_features': features,
         'scaler_X': scaler_X,
         'scaler_y_pk': scaler_y_pk,
         'scaler_y_pd': scaler_y_pd,
-        'n_features': len(features)
+        'n_features': len(features),
+        'pk_transform': pk_transform,
+        'pd_transform': pd_transform,
     }
 
     print(f"\nDatasets prepared:")
