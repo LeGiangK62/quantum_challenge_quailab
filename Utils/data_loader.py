@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 
 # =========================================================
@@ -171,7 +171,9 @@ def build_feature_list(
     time_windows: list = None,
     half_lives: list = None,
     add_decay: bool = True,
-    use_perkg: bool = False
+    use_perkg: bool = False,
+    add_pk_summary: bool = False,
+    add_pk_cumulative: bool = False,
 ) -> List[str]:
     """Build the feature list matching old code."""
     if time_windows is None:
@@ -206,6 +208,14 @@ def build_feature_list(
         perkg_features.extend([f'DOSE_SUM_PREV{w}H_PER_KG' for w in time_windows])
         base_features.extend(perkg_features)
 
+    # Patient-level PK summary features
+    if add_pk_summary:
+        base_features.extend(PK_PATIENT_FEATURES)
+
+    # Cumulative PK features (causal, up to current time)
+    if add_pk_cumulative:
+        base_features.extend(PK_CUMULATIVE_FEATURES)
+
     return base_features
 
 
@@ -227,6 +237,153 @@ def add_perkg_features(df: pd.DataFrame, time_windows: list = None) -> pd.DataFr
             df[f'{col}_PER_KG'] = (df[col] / bw).fillna(0.0)
 
     return df
+
+
+def add_pk_cumulative_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add cumulative PK features up to each observation's time (causal, no leakage).
+
+    For each row (PK or PD) at time t, computes stats from PK observations
+    of the same patient at time <= t.
+
+    Features added:
+    - PK_CUM_MAX: max PK value seen so far
+    - PK_CUM_MEAN: mean PK value seen so far
+    - PK_CUM_AUC: trapezoidal AUC of PK up to current time
+    - PK_CUM_LAST: most recent PK value
+    - PK_CUM_COUNT: number of PK observations seen so far
+    """
+    df = df.copy()
+
+    # Initialize columns
+    for col in PK_CUMULATIVE_FEATURES:
+        df[col] = 0.0
+
+    pk_df = df[df['DVID'] == 1].copy()
+
+    # Pre-group PK by patient, sorted by time
+    pk_by_patient = {}
+    for pid in df['ID'].unique():
+        pk_p = pk_df[pk_df['ID'] == pid].sort_values('TIME')
+        if len(pk_p) > 0:
+            pk_by_patient[pid] = {
+                'times': pk_p['TIME'].values,
+                'dv': pk_p['DV'].values,
+            }
+
+    # For each row, compute cumulative PK stats up to that row's time
+    for idx, row in df.iterrows():
+        pid = row['ID']
+        t = row['TIME']
+
+        if pid not in pk_by_patient:
+            continue
+
+        pk_data = pk_by_patient[pid]
+        mask = pk_data['times'] <= t
+
+        if not mask.any():
+            continue
+
+        dv_up_to_t = pk_data['dv'][mask]
+        times_up_to_t = pk_data['times'][mask]
+
+        df.at[idx, 'PK_CUM_MAX'] = dv_up_to_t.max()
+        df.at[idx, 'PK_CUM_MEAN'] = dv_up_to_t.mean()
+        df.at[idx, 'PK_CUM_LAST'] = dv_up_to_t[-1]
+        df.at[idx, 'PK_CUM_COUNT'] = len(dv_up_to_t)
+
+        if len(dv_up_to_t) > 1:
+            df.at[idx, 'PK_CUM_AUC'] = np.trapz(dv_up_to_t, times_up_to_t)
+
+    n_with_pk = len(pk_by_patient)
+    total_patients = df['ID'].nunique()
+    print(f"  PK cumulative features: {n_with_pk}/{total_patients} patients have PK data")
+
+    return df
+
+
+PK_CUMULATIVE_FEATURES = [
+    'PK_CUM_MAX', 'PK_CUM_MEAN', 'PK_CUM_AUC',
+    'PK_CUM_LAST', 'PK_CUM_COUNT',
+]
+
+
+def add_pk_patient_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add patient-level PK aggregate features to all observations.
+
+    For each patient, computes summary stats from their PK observations
+    and attaches them to ALL rows (PK and PD) for that patient.
+    This gives the PD model explicit knowledge of the patient's overall
+    PK response profile.
+
+    Features added:
+    - PK_PATIENT_MAX: max PK value for this patient
+    - PK_PATIENT_MEAN: mean PK value
+    - PK_PATIENT_AUC: trapezoidal AUC of PK curve
+    - PK_PATIENT_TMAX: time at which PK peaks
+    - PK_PATIENT_LAST: last observed PK value
+    - PK_PATIENT_CMAX_RATIO: ratio of max PK to mean PK (peakedness)
+    """
+    df = df.copy()
+
+    pk_df = df[df['DVID'] == 1].copy()
+
+    # Compute per-patient PK stats
+    pk_stats = {}
+    for pid in df['ID'].unique():
+        pk_patient = pk_df[pk_df['ID'] == pid].sort_values('TIME')
+
+        if len(pk_patient) == 0:
+            # Placebo / no PK data
+            pk_stats[pid] = {
+                'PK_PATIENT_MAX': 0.0,
+                'PK_PATIENT_MEAN': 0.0,
+                'PK_PATIENT_AUC': 0.0,
+                'PK_PATIENT_TMAX': 0.0,
+                'PK_PATIENT_LAST': 0.0,
+                'PK_PATIENT_CMAX_RATIO': 0.0,
+            }
+            continue
+
+        dv = pk_patient['DV'].values
+        times = pk_patient['TIME'].values
+        pk_max = dv.max()
+        pk_mean = dv.mean()
+
+        # Trapezoidal AUC
+        if len(dv) > 1:
+            auc = np.trapz(dv, times)
+        else:
+            auc = 0.0
+
+        pk_stats[pid] = {
+            'PK_PATIENT_MAX': pk_max,
+            'PK_PATIENT_MEAN': pk_mean,
+            'PK_PATIENT_AUC': auc,
+            'PK_PATIENT_TMAX': times[np.argmax(dv)],
+            'PK_PATIENT_LAST': dv[-1],
+            'PK_PATIENT_CMAX_RATIO': pk_max / pk_mean if pk_mean > 0 else 0.0,
+        }
+
+    # Map back to all rows
+    stats_df = pd.DataFrame.from_dict(pk_stats, orient='index')
+    stats_df.index.name = 'ID'
+
+    for col in stats_df.columns:
+        df[col] = df['ID'].map(stats_df[col]).fillna(0.0)
+
+    n_with_pk = sum(1 for v in pk_stats.values() if v['PK_PATIENT_MAX'] > 0)
+    print(f"  PK patient features: {n_with_pk}/{len(pk_stats)} patients have PK data")
+
+    return df
+
+
+PK_PATIENT_FEATURES = [
+    'PK_PATIENT_MAX', 'PK_PATIENT_MEAN', 'PK_PATIENT_AUC',
+    'PK_PATIENT_TMAX', 'PK_PATIENT_LAST', 'PK_PATIENT_CMAX_RATIO',
+]
 
 
 # =========================================================
@@ -342,6 +499,9 @@ def prepare_pkpd_data(
     combine: bool = True,
     pk_transform: str = 'none',
     pd_transform: str = 'none',
+    normalize_data: bool = False,
+    add_pk_summary: bool = False,
+    add_pk_cumulative: bool = False,
 ) -> Dict:
     """
     Complete data preparation pipeline matching old code.
@@ -368,12 +528,22 @@ def prepare_pkpd_data(
         df_final = add_perkg_features(df_final, time_windows)
         print("  Added per-kg features")
 
+    # Add patient-level PK summary features
+    if add_pk_summary:
+        df_final = add_pk_patient_features(df_final)
+
+    # Add cumulative PK features (causal)
+    if add_pk_cumulative:
+        df_final = add_pk_cumulative_features(df_final)
+
     # Build feature list
     features = build_feature_list(
         time_windows=time_windows,
         half_lives=half_lives,
         add_decay=add_decay,
-        use_perkg=use_perkg
+        use_perkg=use_perkg,
+        add_pk_summary=add_pk_summary,
+        add_pk_cumulative=add_pk_cumulative,
     )
 
     print(f"\nTotal features: {len(features)}")
@@ -411,7 +581,11 @@ def prepare_pkpd_data(
     train_mask_pk = pk_df['ID'].isin(split_ids['train'])
     train_mask_pd = pd_df['ID'].isin(split_ids['train'])
 
-    scaler_X = StandardScaler()
+    if normalize_data:
+        scaler_X = MinMaxScaler(feature_range=(0, 1))
+        print("Using MinMaxScaler [0, 1] for input features")
+    else:
+        scaler_X = StandardScaler()
     scaler_X.fit(pk_df.loc[train_mask_pk, features].values)
 
     scaler_y_pk = StandardScaler()
@@ -475,7 +649,10 @@ def prepare_lstm_sequences(
     half_lives: list = None,
     add_decay: bool = True,
     stratified_split: bool = True,
-    combine: bool = True
+    combine: bool = True,
+    normalize_data: bool = False,
+    add_pk_summary: bool = False,
+    add_pk_cumulative: bool = False,
 ) -> Dict:
     """
     Prepare sequence data for LSTM models.
@@ -503,12 +680,22 @@ def prepare_lstm_sequences(
         df_final = add_perkg_features(df_final, time_windows)
         print("  Added per-kg features")
 
+    # Add patient-level PK summary features
+    if add_pk_summary:
+        df_final = add_pk_patient_features(df_final)
+
+    # Add cumulative PK features (causal)
+    if add_pk_cumulative:
+        df_final = add_pk_cumulative_features(df_final)
+
     # Build feature list
     features = build_feature_list(
         time_windows=time_windows,
         half_lives=half_lives,
         add_decay=add_decay,
-        use_perkg=use_perkg
+        use_perkg=use_perkg,
+        add_pk_summary=add_pk_summary,
+        add_pk_cumulative=add_pk_cumulative,
     )
 
     print(f"\nTotal features: {len(features)}")
@@ -545,7 +732,11 @@ def prepare_lstm_sequences(
     train_mask_pk = pk_df['ID'].isin(split_ids['train'])
     train_mask_pd = pd_df['ID'].isin(split_ids['train'])
 
-    scaler_X = StandardScaler()
+    if normalize_data:
+        scaler_X = MinMaxScaler(feature_range=(0, 1))
+        print("Using MinMaxScaler [0, 1] for input features")
+    else:
+        scaler_X = StandardScaler()
     scaler_X.fit(pk_df.loc[train_mask_pk, features].values)
 
     scaler_y_pk = StandardScaler()

@@ -309,26 +309,31 @@ class HierarchicalPKPDLSTM(nn.Module):
             device = x_pd.device
 
             if 'pk_embeddings' in results:
-                pk_emb = results['pk_embeddings']
-                pk_pred = results['pk']
+                pk_emb = results['pk_embeddings']   # [batch, seq_pk, hidden]
+                pk_pred = results['pk']             # [batch, seq_pk, 1]
 
                 if self.mode == 'joint':
                     pk_emb = pk_emb.detach()
                     pk_pred = pk_pred.detach()
 
-                # Align PK sequence length to PD sequence length if they differ
-                pk_seq_len = pk_emb.shape[1]
-                if pk_seq_len != pd_seq_len:
-                    # Interpolate PK embeddings/predictions to match PD time steps
-                    # [batch, seq, feat] -> [batch, feat, seq] for interpolate
-                    pk_emb = F.interpolate(
-                        pk_emb.transpose(1, 2), size=pd_seq_len, mode='linear', align_corners=False
-                    ).transpose(1, 2)
-                    pk_pred = F.interpolate(
-                        pk_pred.transpose(1, 2), size=pd_seq_len, mode='linear', align_corners=False
-                    ).transpose(1, 2)
+                # Use last valid PK hidden state as patient-level PK summary.
+                # Broadcast to all PD timepoints.
+                # This avoids spurious interpolation in embedding space and
+                # correctly represents "cumulative PK history up to last observation".
+                if lengths_pk is not None:
+                    # Gather last valid timestep per patient
+                    last_idx = (lengths_pk - 1).clamp(min=0)  # [batch]
+                    pk_emb_last = pk_emb[torch.arange(batch_size, device=device), last_idx]   # [batch, hidden]
+                    pk_pred_last = pk_pred[torch.arange(batch_size, device=device), last_idx] # [batch, 1]
+                else:
+                    pk_emb_last = pk_emb[:, -1, :]   # [batch, hidden]
+                    pk_pred_last = pk_pred[:, -1, :]  # [batch, 1]
+
+                # Expand to [batch, pd_seq_len, *]
+                pk_emb  = pk_emb_last.unsqueeze(1).expand(-1, pd_seq_len, -1)
+                pk_pred = pk_pred_last.unsqueeze(1).expand(-1, pd_seq_len, -1)
             else:
-                # No PK available - use zeros
+                # No PK available (placebo) - use zeros
                 pk_emb = torch.zeros(batch_size, pd_seq_len, self.hidden_dim * self.num_directions, device=device)
                 pk_pred = torch.zeros(batch_size, pd_seq_len, 1, device=device)
 

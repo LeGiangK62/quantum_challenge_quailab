@@ -24,7 +24,7 @@ from Utils.args import get_args, print_args
 from Utils.data_loader import prepare_pkpd_data, prepare_lstm_sequences, collate_lstm_batch
 from Utils.data_process import PKPDDataset, prepare_gnn_data, collate_pkpd
 from Utils.training import train_gnn, train_mlp, train_lstm, evaluate_gnn, evaluate_mlp, evaluate_lstm, train_mlp_v2, evaluate_mlp_v2
-from Utils.plot import plot_gnn_patient_timeseries, plot_patient_timeseries, plot_predictions
+from Utils.plot import plot_gnn_patient_timeseries, plot_patient_timeseries, plot_predictions, plot_lstm_patient_timeseries
 from Utils.log import plot_metrics, logger
 from Models.mlp import HierarchicalPKPDMLP
 from Models.gnn import HierarchicalPKPDGNN
@@ -63,6 +63,10 @@ def main():
     torch.manual_seed(args.random_seed)
     np.random.seed(args.random_seed)
 
+    # Default transforms (overridden per model below)
+    pk_transform = 'none'
+    pd_transform = 'none'
+
     # ==================== Model Selection ====================
     if args.model == 'mlp':
         logger.info("=" * 60)
@@ -89,6 +93,9 @@ def main():
                 stratified_split=False,
                 pk_transform=pk_transform,
                 pd_transform=pd_transform,
+                normalize_data=args.normalize_data,
+                add_pk_summary=args.add_pk_summary,
+                add_pk_cumulative=args.add_pk_cumulative,
             )
             logger.info("COMBINE MODE: Using ALL data for training")
             # Use same data for train/val/test
@@ -109,6 +116,9 @@ def main():
                 stratified_split=args.stratified_split,
                 pk_transform=pk_transform,
                 pd_transform=pd_transform,
+                normalize_data=args.normalize_data,
+                add_pk_summary=args.add_pk_summary,
+                add_pk_cumulative=args.add_pk_cumulative,
             )
 
         # Create datasets
@@ -244,6 +254,9 @@ def main():
                 half_lives=args.half_lives,
                 add_decay=args.add_decay,
                 stratified_split=False,
+                normalize_data=args.normalize_data,
+                add_pk_summary=args.add_pk_summary,
+                add_pk_cumulative=args.add_pk_cumulative,
             )
             logger.info("COMBINE MODE: Using ALL data for training")
             data['val_pk'] = data['train_pk']
@@ -261,6 +274,9 @@ def main():
                 half_lives=args.half_lives,
                 add_decay=args.add_decay,
                 stratified_split=args.stratified_split,
+                normalize_data=args.normalize_data,
+                add_pk_summary=args.add_pk_summary,
+                add_pk_cumulative=args.add_pk_cumulative,
             )
 
         # Create datasets
@@ -312,7 +328,10 @@ def main():
             half_lives=args.half_lives,
             add_decay=args.add_decay,
             stratified_split=args.stratified_split,
-            combine=args.combine
+            combine=args.combine,
+            normalize_data=args.normalize_data,
+            add_pk_summary=args.add_pk_summary,
+            add_pk_cumulative=args.add_pk_cumulative,
         )
 
         if args.combine:
@@ -433,12 +452,19 @@ def main():
             }
             plot_patient_timeseries(all_pk_data, all_pd_data, model, device,
                                     save_dir, f"{args.model}_{args.mode}",
-                                    patient_ids=[9, 13, 26, 46])
+                                    patient_ids=[9, 13, 26, 46],
+                                    pk_transform=pk_transform,
+                                    pd_transform=pd_transform)
         elif args.model in ['gnn', 'hqgnn']:
             all_gnn_data = data['train_data'] + data['val_data'] + data['test_data']
             plot_gnn_patient_timeseries(all_gnn_data, model, device,
                                         save_dir, f"{args.model}_{args.mode}",
                                         patient_ids=[9, 13, 26, 46])
+        elif args.model in ['lstm', 'hqlstm']:
+            all_sequences = data['train_sequences'] + data['val_sequences'] + data['test_sequences']
+            plot_lstm_patient_timeseries(all_sequences, model, device,
+                                         save_dir, f"{args.model}_{args.mode}",
+                                         patient_ids=[9, 13, 26, 46])
 
     logger.info("=" * 60)
     logger.info("TRAINING COMPLETE!")

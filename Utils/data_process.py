@@ -9,40 +9,85 @@ from Utils.log import logger
 # Dataset Classes
 # ============================================================
 class PKPDDataset(Dataset):
-    """Dataset for PK/PD tabular data (MLP)."""
+    """
+    Dataset for PK/PD tabular data (MLP).
+
+    Each sample pairs a PD observation with the most recent PK observation
+    from the SAME patient (time <= pd_time), ensuring dual_stage/joint modes
+    receive the correct patient's PK prediction when encoding PD.
+
+    Placebo patients (no PK) are included with zero-filled PK features
+    so their PD observations still contribute to PD training.
+    """
 
     def __init__(self, pk_data: dict, pd_data: dict):
-        """
-        Args:
-            pk_data: dict with 'X', 'y', 'ids', 'times'
-            pd_data: dict with 'X', 'y', 'ids', 'times'
-        """
-        self.pk_X = torch.FloatTensor(pk_data['X'])
-        self.pk_y = torch.FloatTensor(pk_data['y']).unsqueeze(1)
-        self.pk_ids = pk_data['ids']
-        self.pk_times = pk_data['times']
+        pk_X = pk_data['X']
+        pk_y = pk_data['y']
+        pk_ids = pk_data['ids']
+        pk_times = pk_data['times']
 
-        self.pd_X = torch.FloatTensor(pd_data['X'])
-        self.pd_y = torch.FloatTensor(pd_data['y']).unsqueeze(1)
-        self.pd_ids = pd_data['ids']
-        self.pd_times = pd_data['times']
+        pd_X = pd_data['X']
+        pd_y = pd_data['y']
+        pd_ids = pd_data['ids']
+        pd_times = pd_data['times']
+
+        n_features = pk_X.shape[1]
+
+        # Group PK observations by patient
+        pk_by_patient = {}
+        for i, pid in enumerate(pk_ids):
+            pk_by_patient.setdefault(pid, []).append(i)
+
+        # Build aligned pairs: for each PD obs find closest past PK from same patient
+        paired_pk_X, paired_pk_y = [], []
+        paired_pd_X, paired_pd_y = [], []
+        n_zero_pk = 0
+
+        for pd_i in range(len(pd_ids)):
+            pid = pd_ids[pd_i]
+            t_pd = pd_times[pd_i]
+
+            if pid in pk_by_patient:
+                idxs = np.array(pk_by_patient[pid])
+                times = pk_times[idxs]
+
+                # Prefer most recent PK at or before pd_time
+                past = idxs[times <= t_pd]
+                if len(past) > 0:
+                    pk_i = past[np.argmax(pk_times[past])]
+                else:
+                    # No past PK — use closest overall (early timepoints)
+                    pk_i = idxs[np.argmin(np.abs(times - t_pd))]
+
+                paired_pk_X.append(pk_X[pk_i])
+                paired_pk_y.append(pk_y[pk_i])
+            else:
+                # Placebo: no PK — use zeros so PD still trains
+                paired_pk_X.append(np.zeros(n_features, dtype=np.float32))
+                paired_pk_y.append(np.float32(0.0))
+                n_zero_pk += 1
+
+            paired_pd_X.append(pd_X[pd_i])
+            paired_pd_y.append(pd_y[pd_i])
+
+        if n_zero_pk > 0:
+            print(f"  PKPDDataset: {n_zero_pk} placebo PD obs paired with zero PK")
+        print(f"  PKPDDataset: {len(paired_pd_X)} aligned (patient-matched) PK-PD pairs")
+
+        self.pk_X = torch.FloatTensor(np.array(paired_pk_X))
+        self.pk_y = torch.FloatTensor(np.array(paired_pk_y)).unsqueeze(1)
+        self.pd_X = torch.FloatTensor(np.array(paired_pd_X))
+        self.pd_y = torch.FloatTensor(np.array(paired_pd_y)).unsqueeze(1)
 
     def __len__(self):
-        return max(len(self.pk_X), len(self.pd_X))
+        return len(self.pd_X)
 
     def __getitem__(self, idx):
-        pk_idx = idx % len(self.pk_X)
-        pd_idx = idx % len(self.pd_X)
-
         return {
-            'pk_x': self.pk_X[pk_idx],
-            'pk_y': self.pk_y[pk_idx],
-            'pk_id': self.pk_ids[pk_idx],
-            'pk_time': self.pk_times[pk_idx],
-            'pd_x': self.pd_X[pd_idx],
-            'pd_y': self.pd_y[pd_idx],
-            'pd_id': self.pd_ids[pd_idx],
-            'pd_time': self.pd_times[pd_idx],
+            'pk_x': self.pk_X[idx],
+            'pk_y': self.pk_y[idx],
+            'pd_x': self.pd_X[idx],
+            'pd_y': self.pd_y[idx],
         }
 
 
@@ -76,7 +121,7 @@ def prepare_gnn_data(args):
     except ImportError:
         raise ImportError("torch_geometric required for GNN")
 
-    from sklearn.preprocessing import StandardScaler
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
     from sklearn.model_selection import train_test_split
 
     logger.info("Preparing GNN graph data...")
@@ -104,6 +149,61 @@ def prepare_gnn_data(args):
     df['TIME_LOG'] = np.log1p(df['TIME'])
     df['TIME_SQUARED'] = df['TIME'] ** 2
     base_features.extend(['TIME_LOG', 'TIME_SQUARED'])
+
+    # Add patient-level PK summary features
+    if getattr(args, 'add_pk_summary', False):
+        pk_all = df[df['DVID'] == 1]
+        for pid in df['ID'].unique():
+            pk_p = pk_all[pk_all['ID'] == pid].sort_values('TIME')
+            if len(pk_p) > 0:
+                dv = pk_p['DV'].values
+                times_p = pk_p['TIME'].values
+                df.loc[df['ID'] == pid, 'PK_PATIENT_MAX'] = dv.max()
+                df.loc[df['ID'] == pid, 'PK_PATIENT_MEAN'] = dv.mean()
+                df.loc[df['ID'] == pid, 'PK_PATIENT_AUC'] = np.trapz(dv, times_p) if len(dv) > 1 else 0.0
+                df.loc[df['ID'] == pid, 'PK_PATIENT_TMAX'] = times_p[np.argmax(dv)]
+                df.loc[df['ID'] == pid, 'PK_PATIENT_LAST'] = dv[-1]
+                df.loc[df['ID'] == pid, 'PK_PATIENT_CMAX_RATIO'] = dv.max() / dv.mean() if dv.mean() > 0 else 0.0
+            else:
+                for col in ['PK_PATIENT_MAX', 'PK_PATIENT_MEAN', 'PK_PATIENT_AUC',
+                            'PK_PATIENT_TMAX', 'PK_PATIENT_LAST', 'PK_PATIENT_CMAX_RATIO']:
+                    df.loc[df['ID'] == pid, col] = 0.0
+        base_features.extend(['PK_PATIENT_MAX', 'PK_PATIENT_MEAN', 'PK_PATIENT_AUC',
+                              'PK_PATIENT_TMAX', 'PK_PATIENT_LAST', 'PK_PATIENT_CMAX_RATIO'])
+        logger.info("Added patient-level PK summary features for GNN")
+
+    # Add cumulative PK features (causal, per-observation)
+    if getattr(args, 'add_pk_cumulative', False):
+        pk_all = df[df['DVID'] == 1]
+        cum_cols = ['PK_CUM_MAX', 'PK_CUM_MEAN', 'PK_CUM_AUC', 'PK_CUM_LAST', 'PK_CUM_COUNT']
+        for col in cum_cols:
+            df[col] = 0.0
+
+        pk_by_patient = {}
+        for pid in df['ID'].unique():
+            pk_p = pk_all[pk_all['ID'] == pid].sort_values('TIME')
+            if len(pk_p) > 0:
+                pk_by_patient[pid] = {'times': pk_p['TIME'].values, 'dv': pk_p['DV'].values}
+
+        for idx, row in df.iterrows():
+            pid, t = row['ID'], row['TIME']
+            if pid not in pk_by_patient:
+                continue
+            pk_data = pk_by_patient[pid]
+            mask = pk_data['times'] <= t
+            if not mask.any():
+                continue
+            dv_up = pk_data['dv'][mask]
+            times_up = pk_data['times'][mask]
+            df.at[idx, 'PK_CUM_MAX'] = dv_up.max()
+            df.at[idx, 'PK_CUM_MEAN'] = dv_up.mean()
+            df.at[idx, 'PK_CUM_LAST'] = dv_up[-1]
+            df.at[idx, 'PK_CUM_COUNT'] = len(dv_up)
+            if len(dv_up) > 1:
+                df.at[idx, 'PK_CUM_AUC'] = np.trapz(dv_up, times_up)
+
+        base_features.extend(cum_cols)
+        logger.info("Added cumulative PK features for GNN")
 
     # Create graphs per patient
     graphs = []
@@ -199,7 +299,11 @@ def prepare_gnn_data(args):
     logger.info(f"Created {len(graphs)} patient graphs")
 
     # Scale features
-    scaler = StandardScaler()
+    if getattr(args, 'normalize_data', False):
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        logger.info("Using MinMaxScaler [0, 1] for input features")
+    else:
+        scaler = StandardScaler()
     all_features_concat = np.vstack(all_features)
     scaler.fit(all_features_concat)
 

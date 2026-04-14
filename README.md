@@ -136,6 +136,19 @@ python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --csv_path Update
 python main.py --model hqcnn --epochs 300 --hqcnn_num_layers 1 --csv_path UpdatedEstData
 python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64 --csv_path UpdatedEstData
 python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 --csv_path UpdatedEstData
+
+
+python main.py --model mlp --add_pk_summary  \
+    --epochs 300 --csv_path UpdatedEstData   
+python main.py --model gnn  --gnn_hidden_dim 64 --add_pk_summary   \
+    --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping  
+python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --add_pk_summary\
+    --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping  
+
+add_pk_cumulative or add_pk_summary help increase MLP performance
+python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
+
+Not work for GNN and LSTM
 ```
 
 ---

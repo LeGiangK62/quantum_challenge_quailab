@@ -89,7 +89,7 @@ def plot_predictions(train_results, test_results, save_dir, model_name):
 
 
 def plot_patient_timeseries(pk_data, pd_data, model, device, save_dir, model_name,
-                            patient_ids=None):
+                            patient_ids=None, pk_transform='none', pd_transform='none'):
     """
     Plot time series for selected patients.
     Also saves raw data for reproducibility.
@@ -102,7 +102,10 @@ def plot_patient_timeseries(pk_data, pd_data, model, device, save_dir, model_nam
         save_dir: directory to save plots
         model_name: name for plot title
         patient_ids: list of patient IDs to plot (default: [9, 13, 26, 46])
+        pk_transform: transform applied to PK targets ('none', 'log', 'sqrt')
+        pd_transform: transform applied to PD targets ('none', 'log', 'sqrt')
     """
+    from Utils.data_loader import inverse_target_transform
     os.makedirs(save_dir, exist_ok=True)
 
     if patient_ids is None:
@@ -162,13 +165,17 @@ def plot_patient_timeseries(pk_data, pd_data, model, device, save_dir, model_nam
                 pk_results = model(pk_X_tensor, None)
                 pk_pred = pk_results['pk'].cpu().numpy().flatten()
 
+            # Inverse transform to original scale
+            pk_y_plot = inverse_target_transform(pk_y, pk_transform)
+            pk_pred_plot = inverse_target_transform(pk_pred, pk_transform)
+
             # Store data for saving
             timeseries_data[f'patient_{patient_id}_pk_times'] = pk_times
-            timeseries_data[f'patient_{patient_id}_pk_actual'] = pk_y
-            timeseries_data[f'patient_{patient_id}_pk_predicted'] = pk_pred
+            timeseries_data[f'patient_{patient_id}_pk_actual'] = pk_y_plot
+            timeseries_data[f'patient_{patient_id}_pk_predicted'] = pk_pred_plot
 
-            ax_pk.plot(pk_times, pk_y, 'o-', label='Actual PK', markersize=6, linewidth=2, color='blue')
-            ax_pk.plot(pk_times, pk_pred, 's--', label='Predicted PK', markersize=6, linewidth=2, color='orange')
+            ax_pk.plot(pk_times, pk_y_plot, 'o-', label='Actual PK', markersize=6, linewidth=2, color='blue')
+            ax_pk.plot(pk_times, pk_pred_plot, 's--', label='Predicted PK', markersize=6, linewidth=2, color='orange')
             ax_pk.set_xlabel('Time (hours)')
             ax_pk.set_ylabel('PK Value')
             ax_pk.legend()
@@ -198,13 +205,17 @@ def plot_patient_timeseries(pk_data, pd_data, model, device, save_dir, model_nam
                 pd_results = model(None, pd_X_tensor)
                 pd_pred = pd_results['pd'].cpu().numpy().flatten()
 
+            # Inverse transform to original scale
+            pd_y_plot = inverse_target_transform(pd_y, pd_transform)
+            pd_pred_plot = inverse_target_transform(pd_pred, pd_transform)
+
             # Store data for saving
             timeseries_data[f'patient_{patient_id}_pd_times'] = pd_times
-            timeseries_data[f'patient_{patient_id}_pd_actual'] = pd_y
-            timeseries_data[f'patient_{patient_id}_pd_predicted'] = pd_pred
+            timeseries_data[f'patient_{patient_id}_pd_actual'] = pd_y_plot
+            timeseries_data[f'patient_{patient_id}_pd_predicted'] = pd_pred_plot
 
-            ax_pd.plot(pd_times, pd_y, 'o-', label='Actual PD', markersize=6, linewidth=2, color='blue')
-            ax_pd.plot(pd_times, pd_pred, 's--', label='Predicted PD', markersize=6, linewidth=2, color='orange')
+            ax_pd.plot(pd_times, pd_y_plot, 'o-', label='Actual PD', markersize=6, linewidth=2, color='blue')
+            ax_pd.plot(pd_times, pd_pred_plot, 's--', label='Predicted PD', markersize=6, linewidth=2, color='orange')
             ax_pd.legend()
         else:
             ax_pd.text(0.5, 0.5, 'No PD data', transform=ax_pd.transAxes,
@@ -341,3 +352,134 @@ def plot_gnn_patient_timeseries(all_data, model, device, save_dir, model_name, p
     plt.savefig(os.path.join(save_dir, 'patient_timeseries.png'), dpi=300, bbox_inches='tight')
     plt.close()
     logger.info(f"Saved GNN patient time series plots to {save_dir}")
+
+
+def plot_lstm_patient_timeseries(sequences, model, device, save_dir, model_name,
+                                  patient_ids=None, pk_transform='none', pd_transform='none'):
+    """
+    Plot time series for selected patients (LSTM version).
+
+    Args:
+        sequences: list of sequence dicts (from prepare_lstm_sequences),
+                   each dict has 'id', 'pk': {'X', 'y', 'times'}, 'pd': {...}
+        model: trained HierarchicalPKPDLSTM
+        device: torch device
+        save_dir: directory to save plots
+        model_name: name for plot title
+        patient_ids: list of patient IDs to plot
+        pk_transform: transform applied to PK targets ('none', 'log', 'sqrt')
+        pd_transform: transform applied to PD targets ('none', 'log', 'sqrt')
+    """
+    from Utils.data_loader import collate_lstm_batch, inverse_target_transform
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    if patient_ids is None:
+        patient_ids = [9, 13, 26, 46]
+
+    # Build lookup: id -> sequence dict
+    seq_by_id = {s['id']: s for s in sequences}
+
+    # Filter to available
+    available = [pid for pid in patient_ids if pid in seq_by_id]
+    if not available:
+        available = [s['id'] for s in sequences[:4]]
+    patient_ids = available
+
+    n_patients = len(patient_ids)
+    fig, axes = plt.subplots(n_patients, 2, figsize=(14, 4 * n_patients))
+    if n_patients == 1:
+        axes = axes.reshape(1, -1)
+
+    model.eval()
+    timeseries_data = {}
+
+    for idx, pid in enumerate(patient_ids):
+        seq = seq_by_id[pid]
+
+        # Run model on this single patient
+        batch = collate_lstm_batch([seq], device=device)
+
+        with torch.no_grad():
+            if 'X_pk' in batch and 'X_pd' in batch:
+                results = model(
+                    x_pk=batch['X_pk'], x_pd=batch['X_pd'],
+                    lengths_pk=batch['lengths_pk'], lengths_pd=batch['lengths_pd']
+                )
+                pk_pred_seq = results['pk'].squeeze(-1).squeeze(0).cpu().numpy()  # [seq_pk]
+                pd_pred_seq = results['pd'].squeeze(-1).squeeze(0).cpu().numpy()  # [seq_pd]
+            elif 'X_pd' in batch:
+                results = model(x_pk=None, x_pd=batch['X_pd'], lengths_pd=batch['lengths_pd'])
+                pk_pred_seq = None
+                pd_pred_seq = results['pd'].squeeze(-1).squeeze(0).cpu().numpy()
+            else:
+                continue
+
+        # ---- PK plot ----
+        ax_pk = axes[idx, 0]
+        if 'pk' in seq and pk_pred_seq is not None:
+            pk_times = seq['pk']['times']
+            pk_y = seq['pk']['y']
+            pk_len = len(pk_times)
+            pk_pred_seq = pk_pred_seq[:pk_len]
+
+            sort_idx = np.argsort(pk_times)
+            pk_y_plot = inverse_target_transform(pk_y[sort_idx], pk_transform)
+            pk_pred_plot = inverse_target_transform(pk_pred_seq[sort_idx], pk_transform)
+
+            ax_pk.plot(pk_times[sort_idx], pk_y_plot, 'o-', label='Actual PK',
+                       color='blue', markersize=5, linewidth=1.5)
+            ax_pk.plot(pk_times[sort_idx], pk_pred_plot, 's--', label='Predicted PK',
+                       color='orange', markersize=5, linewidth=1.5)
+            ax_pk.legend(fontsize=8)
+
+            timeseries_data[f'patient_{pid}_pk_times'] = pk_times[sort_idx]
+            timeseries_data[f'patient_{pid}_pk_actual'] = pk_y_plot
+            timeseries_data[f'patient_{pid}_pk_predicted'] = pk_pred_plot
+        else:
+            ax_pk.text(0.5, 0.5, 'No PK data\n(No dose)', transform=ax_pk.transAxes,
+                       ha='center', va='center', fontsize=12, color='gray')
+
+        ax_pk.set_title(f'Patient {pid} - PK')
+        ax_pk.set_xlabel('Time (hours)')
+        ax_pk.set_ylabel('PK Value')
+        ax_pk.grid(True, alpha=0.3)
+
+        # ---- PD plot ----
+        ax_pd = axes[idx, 1]
+        if 'pd' in seq:
+            pd_times = seq['pd']['times']
+            pd_y = seq['pd']['y']
+            pd_len = len(pd_times)
+            pd_pred_seq = pd_pred_seq[:pd_len]
+
+            sort_idx = np.argsort(pd_times)
+            pd_y_plot = inverse_target_transform(pd_y[sort_idx], pd_transform)
+            pd_pred_plot = inverse_target_transform(pd_pred_seq[sort_idx], pd_transform)
+
+            ax_pd.plot(pd_times[sort_idx], pd_y_plot, 'o-', label='Actual PD',
+                       color='blue', markersize=5, linewidth=1.5)
+            ax_pd.plot(pd_times[sort_idx], pd_pred_plot, 's--', label='Predicted PD',
+                       color='orange', markersize=5, linewidth=1.5)
+            ax_pd.legend(fontsize=8)
+
+            timeseries_data[f'patient_{pid}_pd_times'] = pd_times[sort_idx]
+            timeseries_data[f'patient_{pid}_pd_actual'] = pd_y_plot
+            timeseries_data[f'patient_{pid}_pd_predicted'] = pd_pred_plot
+        else:
+            ax_pd.text(0.5, 0.5, 'No PD data', transform=ax_pd.transAxes,
+                       ha='center', va='center', fontsize=12, color='gray')
+
+        ax_pd.set_title(f'Patient {pid} - PD')
+        ax_pd.set_xlabel('Time (hours)')
+        ax_pd.set_ylabel('PD Value')
+        ax_pd.grid(True, alpha=0.3)
+
+    plt.suptitle(f'{model_name} - Patient Time Series', fontsize=13)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'patient_timeseries.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+    timeseries_data['patient_ids'] = np.array(patient_ids)
+    np.savez(os.path.join(save_dir, 'patient_timeseries_data.npz'), **timeseries_data)
+    logger.info(f"Saved LSTM patient time series plots to {save_dir}")

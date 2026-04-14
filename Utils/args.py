@@ -67,6 +67,8 @@ def get_args():
                        help='Add per-kg normalized features')
     parser.add_argument('--combine', action='store_true', default=False,
                        help='Use all data for training (no train/val/test split)')
+    parser.add_argument('--normalize_data', action='store_true', default=False,
+                       help='Normalize input features to [0,1] range (MinMaxScaler) instead of StandardScaler')
 
     # ==================== Feature Engineering ====================
     parser.add_argument('--time_windows', type=int, nargs='+',
@@ -77,6 +79,10 @@ def get_args():
                        help='Half-lives for decay features (hours)')
     parser.add_argument('--add_decay', action='store_true', default=True,
                        help='Add exponential decay features')
+    parser.add_argument('--add_pk_summary', action='store_true', default=False,
+                       help='Add patient-level PK summary features (PK_MAX, PK_MEAN, PK_AUC, etc.)')
+    parser.add_argument('--add_pk_cumulative', action='store_true', default=False,
+                       help='Add cumulative PK features up to each timepoint (causal, no leakage)')
 
     # ==================== Training ====================
     parser.add_argument('--epochs', type=int, default=300,
@@ -185,7 +191,7 @@ def print_args(args):
                  'num_layers_pk', 'num_layers_pd', 'lstm_hidden_dim', 'lstm_num_layers',
                  'lstm_bidirectional', 'dropout'],
         'Data': ['csv_path', 'test_size', 'val_size', 'random_seed',
-                'stratified_split', 'use_perkg', 'combine'],
+                'stratified_split', 'use_perkg', 'combine', 'normalize_data'],
         'Features': ['time_windows', 'half_lives', 'add_decay'],
         'Training': ['epochs', 'batch_size', 'learning_rate',
                     'pk_loss_weight', 'pd_loss_weight'],
