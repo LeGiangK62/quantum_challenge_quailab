@@ -127,15 +127,21 @@ def prepare_gnn_data(args):
     logger.info("Preparing GNN graph data...")
     csv_data_path = 'Data/' + args.csv_path + '.csv'
 
-    df = pd.read_csv(csv_data_path)
-    df.columns = [c.strip().upper() for c in df.columns]
+    df_raw = pd.read_csv(csv_data_path)
+    df_raw.columns = [c.strip().upper() for c in df_raw.columns]
+
+    # Keep dose events separately for dose nodes
+    df_dose_events = df_raw[df_raw['EVID'] == 1].copy()
+    use_dose_nodes = getattr(args, 'gnn_dose_nodes', False)
 
     # Filter observations
-    df = df[df['EVID'] == 0].copy()
+    df = df_raw[df_raw['EVID'] == 0].copy()
     if 'MDV' in df.columns:
         df = df[df['MDV'] == 0]
 
     logger.info(f"Total observations: {len(df)}")
+    if use_dose_nodes:
+        logger.info(f"Dosing events (will be added as nodes): {len(df_dose_events)}")
 
     # Feature engineering
     base_features = ['TIME', 'BW', 'DOSE', 
@@ -205,6 +211,18 @@ def prepare_gnn_data(args):
         base_features.extend(cum_cols)
         logger.info("Added cumulative PK features for GNN")
 
+    # Compute dose event features if using dose nodes
+    if use_dose_nodes:
+        df_dose_events['DOSE'] = df_dose_events['AMT']
+        if args.add_decay:
+            for hl in args.half_lives:
+                df_dose_events[f'DECAY_HL{hl}h'] = np.exp(-np.log(2) / hl * df_dose_events['TIME'])
+        df_dose_events['TIME_LOG'] = np.log1p(df_dose_events['TIME'])
+        df_dose_events['TIME_SQUARED'] = df_dose_events['TIME'] ** 2
+
+    # Decay constant for cross-type edges
+    cross_decay = getattr(args, 'gnn_edge_decay', 12.0)
+
     # Create graphs per patient
     graphs = []
     all_features = []
@@ -215,18 +233,34 @@ def prepare_gnn_data(args):
         pk_obs = patient_df[patient_df['DVID'] == 1]
         pd_obs = patient_df[patient_df['DVID'] == 2]
 
-        # Only skip if no PD data (allow patients with only PD, no PK - e.g., placebo)
+        # Only skip if no PD data
         if len(pd_obs) == 0:
             continue
 
         # Node features and targets
         node_features = []
         pk_targets, pd_targets = [], []
-        node_types = []
         times = []
 
-        pk_indices, pd_indices = [], []
+        pk_indices, pd_indices, dose_indices = [], [], []
         node_idx = 0
+
+        # Add DOSE nodes (if enabled)
+        if use_dose_nodes:
+            patient_doses = df_dose_events[df_dose_events['ID'] == patient_id].sort_values('TIME')
+            for _, row in patient_doses.iterrows():
+                features = []
+                for f in base_features:
+                    if f in row.index:
+                        features.append(row[f])
+                    else:
+                        features.append(0.0)
+                node_features.append(features)
+                pk_targets.append(0)
+                pd_targets.append(0)
+                times.append(row['TIME'])
+                dose_indices.append(node_idx)
+                node_idx += 1
 
         # Add PK nodes
         for _, row in pk_obs.iterrows():
@@ -234,7 +268,6 @@ def prepare_gnn_data(args):
             node_features.append(features)
             pk_targets.append(row['DV'])
             pd_targets.append(0)
-            node_types.append(0)
             times.append(row['TIME'])
             pk_indices.append(node_idx)
             node_idx += 1
@@ -245,7 +278,6 @@ def prepare_gnn_data(args):
             node_features.append(features)
             pk_targets.append(0)
             pd_targets.append(row['DV'])
-            node_types.append(1)
             times.append(row['TIME'])
             pd_indices.append(node_idx)
             node_idx += 1
@@ -254,6 +286,14 @@ def prepare_gnn_data(args):
         edges = []
         edge_weights = []
         times_arr = np.array(times)
+
+        # Temporal edges within DOSE nodes
+        for i in range(len(dose_indices) - 1):
+            src, dst = dose_indices[i], dose_indices[i + 1]
+            time_diff = abs(times_arr[dst] - times_arr[src])
+            weight = np.exp(-time_diff / 24.0)
+            edges.extend([[src, dst], [dst, src]])
+            edge_weights.extend([weight, weight])
 
         # Temporal edges within PK nodes
         for i in range(len(pk_indices) - 1):
@@ -271,13 +311,33 @@ def prepare_gnn_data(args):
             edges.extend([[src, dst], [dst, src]])
             edge_weights.extend([weight, weight])
 
-        # PK-PD edges
+        # DOSE → PK edges (dose at t <= pk_time)
+        for pk_idx in pk_indices:
+            pk_time = times_arr[pk_idx]
+            for d_idx in dose_indices:
+                if times_arr[d_idx] <= pk_time:
+                    time_diff = pk_time - times_arr[d_idx]
+                    weight = np.exp(-time_diff / cross_decay)
+                    edges.extend([[d_idx, pk_idx], [pk_idx, d_idx]])
+                    edge_weights.extend([weight, weight])
+
+        # DOSE → PD edges (dose at t <= pd_time)
+        for pd_idx in pd_indices:
+            pd_time = times_arr[pd_idx]
+            for d_idx in dose_indices:
+                if times_arr[d_idx] <= pd_time:
+                    time_diff = pd_time - times_arr[d_idx]
+                    weight = np.exp(-time_diff / cross_decay)
+                    edges.extend([[d_idx, pd_idx], [pd_idx, d_idx]])
+                    edge_weights.extend([weight, weight])
+
+        # PK → PD edges (pk at t <= pd_time)
         for pd_idx in pd_indices:
             pd_time = times_arr[pd_idx]
             for pk_idx in pk_indices:
                 if times_arr[pk_idx] <= pd_time:
                     time_diff = pd_time - times_arr[pk_idx]
-                    weight = np.exp(-time_diff / 12.0)
+                    weight = np.exp(-time_diff / cross_decay)
                     edges.extend([[pk_idx, pd_idx], [pd_idx, pk_idx]])
                     edge_weights.extend([weight, weight])
 
@@ -293,10 +353,18 @@ def prepare_gnn_data(args):
             'pd_targets': np.array(pd_targets, dtype=np.float32),
             'pk_indices': pk_indices,
             'pd_indices': pd_indices,
+            'dose_indices': dose_indices,
             'times': np.array(times, dtype=np.float32),
         })
 
-    logger.info(f"Created {len(graphs)} patient graphs")
+    if use_dose_nodes:
+        avg_dose_nodes = np.mean([len(g['dose_indices']) for g in graphs])
+        avg_total_nodes = np.mean([len(g['times']) for g in graphs])
+        avg_edges = np.mean([g['edge_index'].shape[1] for g in graphs if g['edge_index'].size > 0])
+        logger.info(f"Created {len(graphs)} patient graphs (with dose nodes)")
+        logger.info(f"  Avg nodes: {avg_total_nodes:.0f} (dose: {avg_dose_nodes:.0f}), Avg edges: {avg_edges:.0f}")
+    else:
+        logger.info(f"Created {len(graphs)} patient graphs")
 
     # Scale features
     if getattr(args, 'normalize_data', False):

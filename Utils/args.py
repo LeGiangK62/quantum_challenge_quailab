@@ -39,6 +39,10 @@ def get_args():
                        help='Use GAT instead of GCN')
     parser.add_argument('--use_gating', action='store_true', default=True,
                        help='Use gating mechanism in PD decoder')
+    parser.add_argument('--gnn_dose_nodes', action='store_true', default=False,
+                       help='Add dosing events as nodes in GNN graph')
+    parser.add_argument('--gnn_edge_decay', type=float, default=12.0,
+                       help='Decay constant (hours) for cross-type edge weights')
 
     # ==================== LSTM Hyperparameters ====================
     parser.add_argument('--lstm_hidden_dim', type=int, default=128,
