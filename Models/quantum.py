@@ -487,6 +487,7 @@ class HQCNN(nn.Module):
 
     Uses a QCNN architecture with:
     - 8 qubits
+    - 8 qubits
     - Convolutional layers using U_SU4 gates
     - Pooling layers
     - Classical pre/post processing layers

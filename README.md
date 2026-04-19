@@ -148,7 +148,14 @@ python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --add_pk_summary\
 add_pk_cumulative or add_pk_summary help increase MLP performance
 python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
 
-Not work for GNN and LSTM
+
+python main.py --model lstm --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+
+python main.py  --model gnn  --gnn_hidden_dim 64 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+Not work for GNN
+
+python main.py --model hqcnn --hqcnn_num_layers 2 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative     
+
 ```
 
 ---
