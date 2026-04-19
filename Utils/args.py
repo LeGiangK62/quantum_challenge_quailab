@@ -52,9 +52,15 @@ def get_args():
     parser.add_argument('--lstm_bidirectional', action='store_true', default=True,
                        help='Use bidirectional LSTM')
 
-    # ==================== HQCNN Hyperparameters ====================
+    # ==================== Quantum Hyperparameters ====================
     parser.add_argument('--hqcnn_num_layers', type=int, default=1,
                        help='Number of quantum layers for HQCNN')
+    parser.add_argument('--using_hqcnn', action='store_true', default=False,
+                       help='Use HQCNN circuit instead of QNN_Amplitude in HQLSTM')
+    parser.add_argument('--n_qubits', type=int, default=4,
+                       help='Number of qubits for QNN_Amplitude')
+    parser.add_argument('--n_qlayers', type=int, default=2,
+                       help='Number of StronglyEntanglingLayers for QNN_Amplitude')
 
     # ==================== Data ====================
     parser.add_argument('--csv_path', type=str, default='QIC2025-EstDat',

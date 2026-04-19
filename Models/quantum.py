@@ -837,7 +837,7 @@ class QLSTMEncoder(nn.Module):
     """LSTM encoder with quantum output layer."""
 
     def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3,
-                 bidirectional=True, n_qlayers=1):
+                 bidirectional=True, n_qlayers=1, n_qubits=4, using_hqcnn=False):
         super().__init__()
 
         self.hidden_dim = hidden_dim
@@ -861,8 +861,15 @@ class QLSTMEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_dim * self.num_directions)
         self.dropout = nn.Dropout(dropout)
 
-        # Quantum predictor (HQCNN)
-        self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+        # Quantum predictor
+        if using_hqcnn:
+            self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+        else:
+            self.predictor = QNN_Amplitude(
+                input_features=hidden_dim * self.num_directions,
+                n_qubits=n_qubits,
+                n_layers=n_qlayers,
+            )
 
     def forward(self, x, lengths=None):
         """
@@ -902,7 +909,7 @@ class QPDLSTMDecoder(nn.Module):
     """LSTM decoder with quantum output for PD prediction."""
 
     def __init__(self, input_dim, pk_embedding_dim, hidden_dim=128, num_layers=2,
-                 dropout=0.3, bidirectional=True, use_gating=True, n_qlayers=1):
+                 dropout=0.3, bidirectional=True, use_gating=True, n_qlayers=1, n_qubits=4, using_hqcnn=False):
         super().__init__()
 
         self.use_gating = use_gating
@@ -931,7 +938,14 @@ class QPDLSTMDecoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # Quantum predictor
-        self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+        if using_hqcnn:
+            self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+        else:
+            self.predictor = QNN_Amplitude(
+                input_features=hidden_dim * self.num_directions,
+                n_qubits=n_qubits,
+                n_layers=n_qlayers,
+            )
 
         # Residual branch (classical)
         self.residual_branch = nn.Sequential(
@@ -986,7 +1000,7 @@ class HQLSTM(nn.Module):
     """
 
     def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3,
-                 bidirectional=True, use_gating=True, mode='dual_stage', n_qlayers=1):
+                 bidirectional=True, use_gating=True, mode='dual_stage', n_qlayers=1, n_qubits=4, using_hqcnn=False):
         super().__init__()
 
         self.mode = mode
@@ -1000,7 +1014,9 @@ class HQLSTM(nn.Module):
             num_layers=num_layers,
             dropout=dropout,
             bidirectional=bidirectional,
-            n_qlayers=n_qlayers
+            n_qlayers=n_qlayers,
+            n_qubits=n_qubits,
+            using_hqcnn=using_hqcnn,
         )
 
         pk_output_dim = hidden_dim * self.num_directions
@@ -1014,7 +1030,9 @@ class HQLSTM(nn.Module):
             dropout=dropout,
             bidirectional=bidirectional,
             use_gating=use_gating,
-            n_qlayers=n_qlayers
+            n_qlayers=n_qlayers,
+            n_qubits=n_qubits,
+            using_hqcnn=using_hqcnn,
         )
 
     def forward(self, x_pk=None, x_pd=None, lengths_pk=None, lengths_pd=None, return_pk=False):

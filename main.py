@@ -359,6 +359,9 @@ def main():
                 bidirectional=args.lstm_bidirectional,
                 use_gating=args.use_gating,
                 mode=args.mode,
+                n_qlayers=args.n_qlayers,
+                n_qubits=args.n_qubits,
+                using_hqcnn=args.using_hqcnn,
             )
 
         logger.info(f"Model: {args.model.upper()}, Mode: {args.mode}")
