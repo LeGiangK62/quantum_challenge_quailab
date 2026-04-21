@@ -861,15 +861,26 @@ class QLSTMEncoder(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_dim * self.num_directions)
         self.dropout = nn.Dropout(dropout)
 
+        lstm_out_dim = hidden_dim * self.num_directions
+
         # Quantum predictor
         if using_hqcnn:
-            self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+            self.predictor = HQCNN(lstm_out_dim, num_layers=n_qlayers)
         else:
             self.predictor = QNN_Amplitude(
-                input_features=hidden_dim * self.num_directions,
+                input_features=lstm_out_dim,
                 n_qubits=n_qubits,
                 n_layers=n_qlayers,
             )
+
+        # Classical residual branch (same as PD decoder)
+        self.residual_branch = nn.Sequential(
+            nn.Linear(lstm_out_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        self.residual_weight = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, x, lengths=None):
         """
@@ -899,8 +910,15 @@ class QLSTMEncoder(nn.Module):
         # Apply quantum predictor to each timestep
         batch_size, seq_len, hidden_size = outputs.shape
         flat_outputs = outputs.reshape(-1, hidden_size)
-        predictions = self.predictor(flat_outputs)
-        predictions = predictions.reshape(batch_size, seq_len, 1)
+
+        pk_main = self.predictor(flat_outputs)
+        pk_main = pk_main.reshape(batch_size, seq_len, 1)
+
+        # Classical residual
+        pk_residual = self.residual_branch(flat_outputs)
+        pk_residual = pk_residual.reshape(batch_size, seq_len, 1)
+
+        predictions = pk_main + self.residual_weight * pk_residual
 
         return outputs, predictions
 

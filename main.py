@@ -97,7 +97,7 @@ def main():
                 add_pk_summary=args.add_pk_summary,
                 add_pk_cumulative=args.add_pk_cumulative,
             )
-            logger.info("COMBINE MODE: Using ALL data for training")
+            # logger.info("COMBINE MODE: Using ALL data for training")
             # Use same data for train/val/test
             data['val_pk'] = data['train_pk']
             data['val_pd'] = data['train_pd']
@@ -258,7 +258,7 @@ def main():
                 add_pk_summary=args.add_pk_summary,
                 add_pk_cumulative=args.add_pk_cumulative,
             )
-            logger.info("COMBINE MODE: Using ALL data for training")
+            # logger.info("COMBINE MODE: Using ALL data for training")
             data['val_pk'] = data['train_pk']
             data['val_pd'] = data['train_pd']
             data['test_pk'] = data['train_pk']
@@ -335,7 +335,7 @@ def main():
         )
 
         if args.combine:
-            logger.info("COMBINE MODE: Using ALL data for training")
+            # logger.info("COMBINE MODE: Using ALL data for training")
             data['val_sequences'] = data['train_sequences']
             data['test_sequences'] = data['train_sequences']
 

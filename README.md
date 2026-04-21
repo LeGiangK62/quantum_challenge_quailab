@@ -156,7 +156,7 @@ Not work for GNN
 
 python main.py --model hqcnn --hqcnn_num_layers 2 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative     
 
-  python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 -lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+  python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
 
 
 

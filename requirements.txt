@@ -7,7 +7,7 @@ pandas>=2.3.3
 scikit-learn>=1.7.2
 
 # Deep Learning - PyTorch (CPU version)
-torch==2.0.1
+torch==2.3.1 # Gefion computer
 torchvision>=0.15.0
 
 # Graph Neural Networks
