@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -153,11 +154,12 @@ def train_mlp(model, train_loader, val_loader, args, device):
         scheduler.step(val_pd_metrics['MSE'])
 
         # Logging
-        if (epoch + 1) % args.log_interval == 0:
+        if (epoch + 0) % args.log_interval == 0:
             log_metrics(epoch + 1, "Train PK", train_pk_metrics)
             log_metrics(epoch + 1, "Train PD", train_pd_metrics)
             log_metrics(epoch + 1, "Val PK", val_pk_metrics)
             log_metrics(epoch + 1, "Val PD", val_pd_metrics)
+
 
         # Early stopping
         if not args.no_early_stopping:
@@ -300,11 +302,12 @@ def train_gnn(model, train_data, val_data, args, device):
             history[f'Val PD_{k}'].append(v)
 
         # Logging
-        if (epoch + 1) % args.log_interval == 0:
+        if (epoch + 0) % args.log_interval == 0:
             log_metrics(epoch + 1, "Train PK", train_pk_metrics)
             log_metrics(epoch + 1, "Train PD", train_pd_metrics)
             log_metrics(epoch + 1, "Val PK", val_pk_metrics)
             log_metrics(epoch + 1, "Val PD", val_pd_metrics)
+
 
         # Early stopping
         if not args.no_early_stopping:
@@ -485,11 +488,12 @@ def train_mlp_v2(model, train_loader, val_loader, args, device, pk_transform='no
 
         scheduler.step(val_pd_metrics['MSE'])
 
-        if (epoch + 1) % args.log_interval == 0:
+        if (epoch + 0) % args.log_interval == 0:
             log_metrics(epoch + 1, "Train PK", train_pk_metrics)
             log_metrics(epoch + 1, "Train PD", train_pd_metrics)
             log_metrics(epoch + 1, "Val PK", val_pk_metrics)
             log_metrics(epoch + 1, "Val PD", val_pd_metrics)
+
 
         # Early stopping (on original scale RMSE)
         if not args.no_early_stopping:
@@ -707,11 +711,12 @@ def train_lstm(model, data, args, device):
 
         scheduler.step(val_pd_metrics['MSE'])
 
-        if (epoch + 1) % args.log_interval == 0:
+        if (epoch + 0) % args.log_interval == 0:
             log_metrics(epoch + 1, "Train PK", train_pk_metrics)
             log_metrics(epoch + 1, "Train PD", train_pd_metrics)
             log_metrics(epoch + 1, "Val PK", val_pk_metrics)
             log_metrics(epoch + 1, "Val PD", val_pd_metrics)
+
 
         if not args.no_early_stopping:
             current_val_loss = val_pd_metrics['RMSE']

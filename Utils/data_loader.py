@@ -502,6 +502,7 @@ def prepare_pkpd_data(
     normalize_data: bool = False,
     add_pk_summary: bool = False,
     add_pk_cumulative: bool = False,
+    no_placebo: bool = False,
 ) -> Dict:
     """
     Complete data preparation pipeline matching old code.
@@ -535,6 +536,16 @@ def prepare_pkpd_data(
     # Add cumulative PK features (causal)
     if add_pk_cumulative:
         df_final = add_pk_cumulative_features(df_final)
+
+    # Exclude placebo (DOSE=0) patients
+    if no_placebo:
+        placebo_ids = df_dose.groupby('ID')['AMT'].sum()
+        placebo_ids = placebo_ids[placebo_ids == 0].index
+        n_before = df_final['ID'].nunique()
+        df_final = df_final[~df_final['ID'].isin(placebo_ids)]
+        df_dose = df_dose[~df_dose['ID'].isin(placebo_ids)]
+        n_after = df_final['ID'].nunique()
+        print(f"\nExcluded {n_before - n_after} placebo patients (DOSE=0)")
 
     # Build feature list
     features = build_feature_list(
@@ -653,6 +664,7 @@ def prepare_lstm_sequences(
     normalize_data: bool = False,
     add_pk_summary: bool = False,
     add_pk_cumulative: bool = False,
+    no_placebo: bool = False,
 ) -> Dict:
     """
     Prepare sequence data for LSTM models.
@@ -687,6 +699,16 @@ def prepare_lstm_sequences(
     # Add cumulative PK features (causal)
     if add_pk_cumulative:
         df_final = add_pk_cumulative_features(df_final)
+
+    # Exclude placebo (DOSE=0) patients
+    if no_placebo:
+        placebo_ids = df_dose.groupby('ID')['AMT'].sum()
+        placebo_ids = placebo_ids[placebo_ids == 0].index
+        n_before = df_final['ID'].nunique()
+        df_final = df_final[~df_final['ID'].isin(placebo_ids)]
+        df_dose = df_dose[~df_dose['ID'].isin(placebo_ids)]
+        n_after = df_final['ID'].nunique()
+        print(f"\nExcluded {n_before - n_after} placebo patients (DOSE=0)")
 
     # Build feature list
     features = build_feature_list(

@@ -77,6 +77,8 @@ def get_args():
                        help='Add per-kg normalized features')
     parser.add_argument('--combine', action='store_true', default=False,
                        help='Use all data for training (no train/val/test split)')
+    parser.add_argument('--no_placebo', action='store_true', default=False,
+                       help='Exclude placebo (DOSE=0) patients from training and evaluation')
     parser.add_argument('--normalize_data', action='store_true', default=False,
                        help='Normalize input features to [0,1] range (MinMaxScaler) instead of StandardScaler')
 

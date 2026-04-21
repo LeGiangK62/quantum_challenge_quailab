@@ -50,6 +50,7 @@ def main():
     print_args(args)
 
     start_time = time.time()
+    logger.info(f"Started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     csv_data_path = 'Data/' + args.csv_path + '.csv'
     # Create save directory
@@ -98,6 +99,7 @@ def main():
                 normalize_data=args.normalize_data,
                 add_pk_summary=args.add_pk_summary,
                 add_pk_cumulative=args.add_pk_cumulative,
+                no_placebo=args.no_placebo,
             )
             # logger.info("COMBINE MODE: Using ALL data for training")
             # Use same data for train/val/test
@@ -121,6 +123,7 @@ def main():
                 normalize_data=args.normalize_data,
                 add_pk_summary=args.add_pk_summary,
                 add_pk_cumulative=args.add_pk_cumulative,
+                no_placebo=args.no_placebo,
             )
 
         # Create datasets
@@ -259,6 +262,7 @@ def main():
                 normalize_data=args.normalize_data,
                 add_pk_summary=args.add_pk_summary,
                 add_pk_cumulative=args.add_pk_cumulative,
+                no_placebo=args.no_placebo,
             )
             # logger.info("COMBINE MODE: Using ALL data for training")
             data['val_pk'] = data['train_pk']
@@ -279,6 +283,7 @@ def main():
                 normalize_data=args.normalize_data,
                 add_pk_summary=args.add_pk_summary,
                 add_pk_cumulative=args.add_pk_cumulative,
+                no_placebo=args.no_placebo,
             )
 
         # Create datasets
@@ -334,6 +339,7 @@ def main():
             normalize_data=args.normalize_data,
             add_pk_summary=args.add_pk_summary,
             add_pk_cumulative=args.add_pk_cumulative,
+            no_placebo=args.no_placebo,
         )
 
         if args.combine:
