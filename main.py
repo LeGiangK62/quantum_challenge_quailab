@@ -49,6 +49,8 @@ def main():
     args = get_args()
     print_args(args)
 
+    start_time = time.time()
+
     csv_data_path = 'Data/' + args.csv_path + '.csv'
     # Create save directory
     timestamp = time.strftime('%y_%m_%d_%H_%M_%S')
@@ -469,8 +471,13 @@ def main():
                                          save_dir, f"{args.model}_{args.mode}",
                                          patient_ids=[9, 13, 26, 46])
 
+    elapsed = time.time() - start_time
+    hours, remainder = divmod(int(elapsed), 3600)
+    minutes, seconds = divmod(remainder, 60)
+
     logger.info("=" * 60)
     logger.info("TRAINING COMPLETE!")
+    logger.info(f"Total time: {hours}h {minutes}m {seconds}s")
     logger.info(f"Results saved to: {save_dir}")
     logger.info("=" * 60)
 
