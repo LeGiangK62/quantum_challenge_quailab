@@ -537,15 +537,15 @@ def prepare_pkpd_data(
     if add_pk_cumulative:
         df_final = add_pk_cumulative_features(df_final)
 
-    # Exclude placebo (DOSE=0) patients
+    # Exclude placebo patients — those with no dosing records (EVID==1)
     if no_placebo:
-        placebo_ids = df_dose.groupby('ID')['AMT'].sum()
-        placebo_ids = placebo_ids[placebo_ids == 0].index
-        n_before = df_final['ID'].nunique()
+        all_ids = df_final['ID'].unique()
+        dosed_ids = df_dose['ID'].unique()
+        placebo_ids = np.setdiff1d(all_ids, dosed_ids)
+        n_before = len(all_ids)
         df_final = df_final[~df_final['ID'].isin(placebo_ids)]
-        df_dose = df_dose[~df_dose['ID'].isin(placebo_ids)]
         n_after = df_final['ID'].nunique()
-        print(f"\nExcluded {n_before - n_after} placebo patients (DOSE=0)")
+        print(f"\nExcluded {n_before - n_after} placebo patients: {sorted(placebo_ids)}")
 
     # Build feature list
     features = build_feature_list(
@@ -700,15 +700,15 @@ def prepare_lstm_sequences(
     if add_pk_cumulative:
         df_final = add_pk_cumulative_features(df_final)
 
-    # Exclude placebo (DOSE=0) patients
+    # Exclude placebo patients — those with no dosing records (EVID==1)
     if no_placebo:
-        placebo_ids = df_dose.groupby('ID')['AMT'].sum()
-        placebo_ids = placebo_ids[placebo_ids == 0].index
-        n_before = df_final['ID'].nunique()
+        all_ids = df_final['ID'].unique()
+        dosed_ids = df_dose['ID'].unique()
+        placebo_ids = np.setdiff1d(all_ids, dosed_ids)
+        n_before = len(all_ids)
         df_final = df_final[~df_final['ID'].isin(placebo_ids)]
-        df_dose = df_dose[~df_dose['ID'].isin(placebo_ids)]
         n_after = df_final['ID'].nunique()
-        print(f"\nExcluded {n_before - n_after} placebo patients (DOSE=0)")
+        print(f"\nExcluded {n_before - n_after} placebo patients: {sorted(placebo_ids)}")
 
     # Build feature list
     features = build_feature_list(

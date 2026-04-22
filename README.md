@@ -162,6 +162,29 @@ python main.py --model hqcnn --hqcnn_num_layers 2 --epochs 300 --csv_path Update
 
 ```
 
+
+### Final Run
+
+```bash
+# MLP
+python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --log_interval 50  --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
+
+# GNN
+
+# LSTM
+python main.py --model lstm --lstm_hidden_dim 128 --epochs 300 --log_interval 50 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+
+
+# HQCNN
+python main.py --model hqcnn --hqcnn_num_layers 1 --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --log_interval 50  --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
+
+# HQGNN
+
+# HQLSTM
+python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --log_interval 50 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+
+```
+
 ---
 
 ## Dose Prediction
