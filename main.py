@@ -178,6 +178,10 @@ def main():
         # Prepare GNN data
         data = prepare_gnn_data(args)
 
+        if args.combine:
+            data['val_data'] = data['train_data']
+            data['test_data'] = data['train_data']
+
         # Create model
         model = HierarchicalPKPDGNN(
             feature_dim=data['feature_dim'],
@@ -214,6 +218,10 @@ def main():
         # Prepare GNN data
         data = prepare_gnn_data(args)
 
+        if args.combine:
+            data['val_data'] = data['train_data']
+            data['test_data'] = data['train_data']
+
         # Create model
         model = HQGNN(
             feature_dim=data['feature_dim'],
@@ -223,6 +231,9 @@ def main():
             dropout=args.dropout,
             use_attention=args.use_attention,
             use_gating=args.use_gating,
+            n_qlayers=args.n_qlayers,
+            n_qubits=args.n_qubits,
+            using_hqcnn=args.using_hqcnn,
         )
 
 
@@ -467,12 +478,24 @@ def main():
                                     pk_transform=pk_transform,
                                     pd_transform=pd_transform)
         elif args.model in ['gnn', 'hqgnn']:
-            all_gnn_data = data['train_data'] + data['val_data'] + data['test_data']
+            # Deduplicate by patient_id (combine mode causes overlap)
+            seen_ids = set()
+            all_gnn_data = []
+            for d in data['train_data'] + data['val_data'] + data['test_data']:
+                if d.patient_id not in seen_ids:
+                    seen_ids.add(d.patient_id)
+                    all_gnn_data.append(d)
             plot_gnn_patient_timeseries(all_gnn_data, model, device,
                                         save_dir, f"{args.model}_{args.mode}",
                                         patient_ids=[9, 13, 26, 46])
         elif args.model in ['lstm', 'hqlstm']:
-            all_sequences = data['train_sequences'] + data['val_sequences'] + data['test_sequences']
+            # Deduplicate by patient id (combine mode causes overlap)
+            seen_ids = set()
+            all_sequences = []
+            for s in data['train_sequences'] + data['val_sequences'] + data['test_sequences']:
+                if s['id'] not in seen_ids:
+                    seen_ids.add(s['id'])
+                    all_sequences.append(s)
             plot_lstm_patient_timeseries(all_sequences, model, device,
                                          save_dir, f"{args.model}_{args.mode}",
                                          patient_ids=[9, 13, 26, 46])

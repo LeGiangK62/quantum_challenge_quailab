@@ -520,7 +520,8 @@ class QPDGNNDecoder(nn.Module):
     """Stage 2: GNN for PD prediction using PK predictions + covariates (Quantum version)."""
 
     def __init__(self, pk_embedding_dim, input_dim, hidden_dim=64, num_layers=3,
-                 dropout=0.2, use_attention=False, use_gating=True, n_qlayers=1):
+                 dropout=0.2, use_attention=False, use_gating=True,
+                 n_qlayers=1, n_qubits=4, using_hqcnn=False):
         super(QPDGNNDecoder, self).__init__()
 
         self.use_attention = use_attention
@@ -556,8 +557,15 @@ class QPDGNNDecoder(nn.Module):
 
         self.dropout = dropout
 
-        # PD predictor head (HQCNN - uses _hqcnn_circuit)
-        self.pd_predictor = HQCNN(input_features=hidden_dim, num_layers=n_qlayers)
+        # PD predictor head
+        if using_hqcnn:
+            self.pd_predictor = HQCNN(input_features=hidden_dim, num_layers=n_qlayers)
+        else:
+            self.pd_predictor = QNN_Amplitude(
+                input_features=hidden_dim,
+                n_qubits=n_qubits,
+                n_layers=n_qlayers,
+            )
 
         # Residual branch - learns additional corrections
         self.residual_branch = nn.Sequential(
@@ -739,7 +747,8 @@ class HQGNN(nn.Module):
     """
 
     def __init__(self, feature_dim, hidden_dim=64, num_layers_pk=3, num_layers_pd=3,
-                 dropout=0.2, use_attention=False, use_gating=True, n_qlayers=1):
+                 dropout=0.2, use_attention=False, use_gating=True,
+                 n_qlayers=1, n_qubits=4, using_hqcnn=False):
         super(HQGNN, self).__init__()
 
         self.pk_encoder = PKGNNEncoder(
@@ -758,7 +767,9 @@ class HQGNN(nn.Module):
             dropout=dropout,
             use_attention=use_attention,
             use_gating=use_gating,
-            n_qlayers=n_qlayers
+            n_qlayers=n_qlayers,
+            n_qubits=n_qubits,
+            using_hqcnn=using_hqcnn,
         )
 
     def forward(self, data, return_pk=False):

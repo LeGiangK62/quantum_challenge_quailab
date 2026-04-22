@@ -43,6 +43,8 @@ def get_args():
                        help='Add dosing events as nodes in GNN graph')
     parser.add_argument('--gnn_edge_decay', type=float, default=12.0,
                        help='Decay constant (hours) for cross-type edge weights')
+    parser.add_argument('--gnn_k_hop', type=int, default=3,
+                       help='Number of skip-edge hops for temporal edges within PK/PD nodes')
 
     # ==================== LSTM Hyperparameters ====================
     parser.add_argument('--lstm_hidden_dim', type=int, default=128,

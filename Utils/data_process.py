@@ -113,6 +113,9 @@ def prepare_gnn_data(args):
     """
     Prepare graph data for GNN training.
 
+    Uses the same feature engineering pipeline as MLP (engineer_dose_features),
+    stratified dose splitting, and proper scaler fitting (train only).
+
     Returns:
         dict with train_data, val_data, test_data, feature_dim
     """
@@ -122,110 +125,100 @@ def prepare_gnn_data(args):
         raise ImportError("torch_geometric required for GNN")
 
     from sklearn.preprocessing import StandardScaler, MinMaxScaler
-    from sklearn.model_selection import train_test_split
+    from Utils.data_loader import (
+        load_data, engineer_dose_features, build_feature_list,
+        stratified_dose_split, add_perkg_features,
+        add_pk_patient_features, add_pk_cumulative_features,
+    )
 
     logger.info("Preparing GNN graph data...")
     csv_data_path = 'Data/' + args.csv_path + '.csv'
 
-    df_raw = pd.read_csv(csv_data_path)
-    df_raw.columns = [c.strip().upper() for c in df_raw.columns]
+    # --- Shared pipeline: load + engineer features (same as MLP) ---
+    df_all, df_obs, df_dose = load_data(csv_data_path)
 
-    # Keep dose events separately for dose nodes
-    df_dose_events = df_raw[df_raw['EVID'] == 1].copy()
+    df = engineer_dose_features(
+        df_obs, df_dose,
+        time_windows=args.time_windows,
+        half_lives=args.half_lives,
+        add_decay=args.add_decay,
+    )
+
+    if getattr(args, 'use_perkg', False):
+        df = add_perkg_features(df, args.time_windows)
+
+    if getattr(args, 'add_pk_summary', False):
+        df = add_pk_patient_features(df)
+
+    if getattr(args, 'add_pk_cumulative', False):
+        df = add_pk_cumulative_features(df)
+
+    # Exclude placebo patients
+    if getattr(args, 'no_placebo', False):
+        all_ids = df['ID'].unique()
+        dosed_ids = df_dose['ID'].unique()
+        placebo_ids = np.setdiff1d(all_ids, dosed_ids)
+        n_before = len(all_ids)
+        df = df[~df['ID'].isin(placebo_ids)]
+        n_after = df['ID'].nunique()
+        print(f"\nExcluded {n_before - n_after} placebo patients: {sorted(placebo_ids)}")
+
+    features = build_feature_list(
+        time_windows=args.time_windows,
+        half_lives=args.half_lives,
+        add_decay=args.add_decay,
+        use_perkg=getattr(args, 'use_perkg', False),
+        add_pk_summary=getattr(args, 'add_pk_summary', False),
+        add_pk_cumulative=getattr(args, 'add_pk_cumulative', False),
+    )
+    logger.info(f"Total features (shared with MLP): {len(features)}")
+
+    # --- Stratified dose split ---
+    if getattr(args, 'stratified_split', True):
+        split_ids = stratified_dose_split(
+            df, df_dose,
+            test_size=args.test_size,
+            val_size=args.val_size,
+            random_state=args.random_seed,
+            combine=getattr(args, 'combine', False),
+        )
+    else:
+        all_ids = df['ID'].unique()
+        rng = np.random.RandomState(args.random_seed)
+        shuffled = rng.permutation(all_ids)
+        n_test = int(len(all_ids) * args.test_size)
+        n_val = int(len(all_ids) * args.val_size)
+        combine = getattr(args, 'combine', False)
+        split_ids = {
+            'test': shuffled[:n_test],
+            'val': shuffled[n_test:n_test + n_val],
+            'train': shuffled if combine else shuffled[n_test + n_val:],
+        }
+
+    # --- Fit scaler on train data only (no leakage) ---
+    train_mask = df['ID'].isin(split_ids['train'])
+    if getattr(args, 'normalize_data', False):
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        logger.info("Using MinMaxScaler [0, 1] for input features")
+    else:
+        scaler = StandardScaler()
+    scaler.fit(df.loc[train_mask, features].values)
+
+    # --- Dose node setup ---
     use_dose_nodes = getattr(args, 'gnn_dose_nodes', False)
-
-    # Filter observations
-    df = df_raw[df_raw['EVID'] == 0].copy()
-    if 'MDV' in df.columns:
-        df = df[df['MDV'] == 0]
-
-    logger.info(f"Total observations: {len(df)}")
+    df_dose_events = df_all[df_all['EVID'] == 1].copy()
     if use_dose_nodes:
+        # Dose nodes need the same features; fill missing with 0
+        df_dose_events['DOSE'] = df_dose_events['AMT']
+        for f in features:
+            if f not in df_dose_events.columns:
+                df_dose_events[f] = 0.0
         logger.info(f"Dosing events (will be added as nodes): {len(df_dose_events)}")
 
-    # Feature engineering
-    base_features = ['TIME', 'BW', 'DOSE', 
-                    #  'COMED'
-                     ]
-    if args.add_decay:
-        for hl in args.half_lives:
-            df[f'DECAY_HL{hl}h'] = np.exp(-np.log(2) / hl * df['TIME'])
-            base_features.append(f'DECAY_HL{hl}h')
-
-    df['TIME_LOG'] = np.log1p(df['TIME'])
-    df['TIME_SQUARED'] = df['TIME'] ** 2
-    base_features.extend(['TIME_LOG', 'TIME_SQUARED'])
-
-    # Add patient-level PK summary features
-    if getattr(args, 'add_pk_summary', False):
-        pk_all = df[df['DVID'] == 1]
-        for pid in df['ID'].unique():
-            pk_p = pk_all[pk_all['ID'] == pid].sort_values('TIME')
-            if len(pk_p) > 0:
-                dv = pk_p['DV'].values
-                times_p = pk_p['TIME'].values
-                df.loc[df['ID'] == pid, 'PK_PATIENT_MAX'] = dv.max()
-                df.loc[df['ID'] == pid, 'PK_PATIENT_MEAN'] = dv.mean()
-                df.loc[df['ID'] == pid, 'PK_PATIENT_AUC'] = np.trapz(dv, times_p) if len(dv) > 1 else 0.0
-                df.loc[df['ID'] == pid, 'PK_PATIENT_TMAX'] = times_p[np.argmax(dv)]
-                df.loc[df['ID'] == pid, 'PK_PATIENT_LAST'] = dv[-1]
-                df.loc[df['ID'] == pid, 'PK_PATIENT_CMAX_RATIO'] = dv.max() / dv.mean() if dv.mean() > 0 else 0.0
-            else:
-                for col in ['PK_PATIENT_MAX', 'PK_PATIENT_MEAN', 'PK_PATIENT_AUC',
-                            'PK_PATIENT_TMAX', 'PK_PATIENT_LAST', 'PK_PATIENT_CMAX_RATIO']:
-                    df.loc[df['ID'] == pid, col] = 0.0
-        base_features.extend(['PK_PATIENT_MAX', 'PK_PATIENT_MEAN', 'PK_PATIENT_AUC',
-                              'PK_PATIENT_TMAX', 'PK_PATIENT_LAST', 'PK_PATIENT_CMAX_RATIO'])
-        logger.info("Added patient-level PK summary features for GNN")
-
-    # Add cumulative PK features (causal, per-observation)
-    if getattr(args, 'add_pk_cumulative', False):
-        pk_all = df[df['DVID'] == 1]
-        cum_cols = ['PK_CUM_MAX', 'PK_CUM_MEAN', 'PK_CUM_AUC', 'PK_CUM_LAST', 'PK_CUM_COUNT']
-        for col in cum_cols:
-            df[col] = 0.0
-
-        pk_by_patient = {}
-        for pid in df['ID'].unique():
-            pk_p = pk_all[pk_all['ID'] == pid].sort_values('TIME')
-            if len(pk_p) > 0:
-                pk_by_patient[pid] = {'times': pk_p['TIME'].values, 'dv': pk_p['DV'].values}
-
-        for idx, row in df.iterrows():
-            pid, t = row['ID'], row['TIME']
-            if pid not in pk_by_patient:
-                continue
-            pk_data = pk_by_patient[pid]
-            mask = pk_data['times'] <= t
-            if not mask.any():
-                continue
-            dv_up = pk_data['dv'][mask]
-            times_up = pk_data['times'][mask]
-            df.at[idx, 'PK_CUM_MAX'] = dv_up.max()
-            df.at[idx, 'PK_CUM_MEAN'] = dv_up.mean()
-            df.at[idx, 'PK_CUM_LAST'] = dv_up[-1]
-            df.at[idx, 'PK_CUM_COUNT'] = len(dv_up)
-            if len(dv_up) > 1:
-                df.at[idx, 'PK_CUM_AUC'] = np.trapz(dv_up, times_up)
-
-        base_features.extend(cum_cols)
-        logger.info("Added cumulative PK features for GNN")
-
-    # Compute dose event features if using dose nodes
-    if use_dose_nodes:
-        df_dose_events['DOSE'] = df_dose_events['AMT']
-        if args.add_decay:
-            for hl in args.half_lives:
-                df_dose_events[f'DECAY_HL{hl}h'] = np.exp(-np.log(2) / hl * df_dose_events['TIME'])
-        df_dose_events['TIME_LOG'] = np.log1p(df_dose_events['TIME'])
-        df_dose_events['TIME_SQUARED'] = df_dose_events['TIME'] ** 2
-
-    # Decay constant for cross-type edges
     cross_decay = getattr(args, 'gnn_edge_decay', 12.0)
 
-    # Create graphs per patient
-    graphs = []
-    all_features = []
+    # --- Build per-patient graphs ---
+    graphs = {}  # patient_id -> graph dict
 
     for patient_id in df['ID'].unique():
         patient_df = df[df['ID'] == patient_id].sort_values('TIME').reset_index(drop=True)
@@ -233,15 +226,12 @@ def prepare_gnn_data(args):
         pk_obs = patient_df[patient_df['DVID'] == 1]
         pd_obs = patient_df[patient_df['DVID'] == 2]
 
-        # Only skip if no PD data
         if len(pd_obs) == 0:
             continue
 
-        # Node features and targets
         node_features = []
         pk_targets, pd_targets = [], []
         times = []
-
         pk_indices, pd_indices, dose_indices = [], [], []
         node_idx = 0
 
@@ -249,13 +239,8 @@ def prepare_gnn_data(args):
         if use_dose_nodes:
             patient_doses = df_dose_events[df_dose_events['ID'] == patient_id].sort_values('TIME')
             for _, row in patient_doses.iterrows():
-                features = []
-                for f in base_features:
-                    if f in row.index:
-                        features.append(row[f])
-                    else:
-                        features.append(0.0)
-                node_features.append(features)
+                feat = [row[f] if f in row.index else 0.0 for f in features]
+                node_features.append(feat)
                 pk_targets.append(0)
                 pd_targets.append(0)
                 times.append(row['TIME'])
@@ -264,8 +249,7 @@ def prepare_gnn_data(args):
 
         # Add PK nodes
         for _, row in pk_obs.iterrows():
-            features = [row[f] for f in base_features]
-            node_features.append(features)
+            node_features.append([row[f] for f in features])
             pk_targets.append(row['DV'])
             pd_targets.append(0)
             times.append(row['TIME'])
@@ -274,8 +258,7 @@ def prepare_gnn_data(args):
 
         # Add PD nodes
         for _, row in pd_obs.iterrows():
-            features = [row[f] for f in base_features]
-            node_features.append(features)
+            node_features.append([row[f] for f in features])
             pk_targets.append(0)
             pd_targets.append(row['DV'])
             times.append(row['TIME'])
@@ -286,32 +269,30 @@ def prepare_gnn_data(args):
         edges = []
         edge_weights = []
         times_arr = np.array(times)
+        n_nodes = len(times_arr)
+        k_hop = getattr(args, 'gnn_k_hop', 3)  # skip-edge reach
 
-        # Temporal edges within DOSE nodes
-        for i in range(len(dose_indices) - 1):
-            src, dst = dose_indices[i], dose_indices[i + 1]
-            time_diff = abs(times_arr[dst] - times_arr[src])
-            weight = np.exp(-time_diff / 24.0)
-            edges.extend([[src, dst], [dst, src]])
-            edge_weights.extend([weight, weight])
+        # Self-loops (critical for GNN stability)
+        for i in range(n_nodes):
+            edges.append([i, i])
+            edge_weights.append(1.0)
 
-        # Temporal edges within PK nodes
-        for i in range(len(pk_indices) - 1):
-            src, dst = pk_indices[i], pk_indices[i + 1]
-            time_diff = abs(times_arr[dst] - times_arr[src])
-            weight = np.exp(-time_diff / 24.0)
-            edges.extend([[src, dst], [dst, src]])
-            edge_weights.extend([weight, weight])
+        def add_temporal_edges(indices, decay_const=24.0):
+            """Add sequential + k-hop skip edges within a node group."""
+            for gap in range(1, k_hop + 1):
+                for i in range(len(indices) - gap):
+                    src, dst = indices[i], indices[i + gap]
+                    time_diff = abs(times_arr[dst] - times_arr[src])
+                    weight = np.exp(-time_diff / decay_const)
+                    edges.extend([[src, dst], [dst, src]])
+                    edge_weights.extend([weight, weight])
 
-        # Temporal edges within PD nodes
-        for i in range(len(pd_indices) - 1):
-            src, dst = pd_indices[i], pd_indices[i + 1]
-            time_diff = abs(times_arr[dst] - times_arr[src])
-            weight = np.exp(-time_diff / 24.0)
-            edges.extend([[src, dst], [dst, src]])
-            edge_weights.extend([weight, weight])
+        # Temporal edges (sequential + skip) within each node type
+        add_temporal_edges(dose_indices)
+        add_temporal_edges(pk_indices)
+        add_temporal_edges(pd_indices)
 
-        # DOSE → PK edges (dose at t <= pk_time)
+        # DOSE → PK edges
         for pk_idx in pk_indices:
             pk_time = times_arr[pk_idx]
             for d_idx in dose_indices:
@@ -321,7 +302,7 @@ def prepare_gnn_data(args):
                     edges.extend([[d_idx, pk_idx], [pk_idx, d_idx]])
                     edge_weights.extend([weight, weight])
 
-        # DOSE → PD edges (dose at t <= pd_time)
+        # DOSE → PD edges
         for pd_idx in pd_indices:
             pd_time = times_arr[pd_idx]
             for d_idx in dose_indices:
@@ -331,7 +312,7 @@ def prepare_gnn_data(args):
                     edges.extend([[d_idx, pd_idx], [pd_idx, d_idx]])
                     edge_weights.extend([weight, weight])
 
-        # PK → PD edges (pk at t <= pd_time)
+        # PK → PD edges
         for pd_idx in pd_indices:
             pd_time = times_arr[pd_idx]
             for pk_idx in pk_indices:
@@ -341,10 +322,11 @@ def prepare_gnn_data(args):
                     edges.extend([[pk_idx, pd_idx], [pd_idx, pk_idx]])
                     edge_weights.extend([weight, weight])
 
+        # Scale node features
         node_features = np.array(node_features, dtype=np.float32)
-        all_features.append(node_features)
+        node_features = scaler.transform(node_features)
 
-        graphs.append({
+        graphs[patient_id] = {
             'patient_id': patient_id,
             'node_features': node_features,
             'edge_index': np.array(edges, dtype=np.int64).T if edges else np.array([[], []], dtype=np.int64),
@@ -355,35 +337,11 @@ def prepare_gnn_data(args):
             'pd_indices': pd_indices,
             'dose_indices': dose_indices,
             'times': np.array(times, dtype=np.float32),
-        })
+        }
 
-    if use_dose_nodes:
-        avg_dose_nodes = np.mean([len(g['dose_indices']) for g in graphs])
-        avg_total_nodes = np.mean([len(g['times']) for g in graphs])
-        avg_edges = np.mean([g['edge_index'].shape[1] for g in graphs if g['edge_index'].size > 0])
-        logger.info(f"Created {len(graphs)} patient graphs (with dose nodes)")
-        logger.info(f"  Avg nodes: {avg_total_nodes:.0f} (dose: {avg_dose_nodes:.0f}), Avg edges: {avg_edges:.0f}")
-    else:
-        logger.info(f"Created {len(graphs)} patient graphs")
+    logger.info(f"Created {len(graphs)} patient graphs")
 
-    # Scale features
-    if getattr(args, 'normalize_data', False):
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        logger.info("Using MinMaxScaler [0, 1] for input features")
-    else:
-        scaler = StandardScaler()
-    all_features_concat = np.vstack(all_features)
-    scaler.fit(all_features_concat)
-
-    for g in graphs:
-        g['node_features'] = scaler.transform(g['node_features'])
-
-    # Split
-    indices = list(range(len(graphs)))
-    train_indices, test_indices = train_test_split(indices, test_size=args.test_size, random_state=args.random_seed)
-    train_indices, val_indices = train_test_split(train_indices, test_size=args.val_size / (1 - args.test_size), random_state=args.random_seed)
-
-    # Convert to PyG Data objects
+    # --- Convert to PyG Data and split ---
     def to_pyg_data(graph):
         x = torch.FloatTensor(graph['node_features'])
         edge_index = torch.LongTensor(graph['edge_index'])
@@ -406,9 +364,9 @@ def prepare_gnn_data(args):
             times=torch.FloatTensor(graph['times']),
         )
 
-    train_data = [to_pyg_data(graphs[i]) for i in train_indices]
-    val_data = [to_pyg_data(graphs[i]) for i in val_indices]
-    test_data = [to_pyg_data(graphs[i]) for i in test_indices]
+    train_data = [to_pyg_data(graphs[pid]) for pid in split_ids['train'] if pid in graphs]
+    val_data = [to_pyg_data(graphs[pid]) for pid in split_ids['val'] if pid in graphs]
+    test_data = [to_pyg_data(graphs[pid]) for pid in split_ids['test'] if pid in graphs]
 
     logger.info(f"Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
 
@@ -416,6 +374,6 @@ def prepare_gnn_data(args):
         'train_data': train_data,
         'val_data': val_data,
         'test_data': test_data,
-        'feature_dim': all_features_concat.shape[1],
+        'feature_dim': len(features),
     }
 

@@ -196,7 +196,7 @@ def train_gnn(model, train_data, val_data, args, device):
         raise ImportError("torch_geometric is required for GNN training. Install with: pip install torch-geometric")
 
     model = model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=25, factor=0.5)
 
     history = {
@@ -213,10 +213,10 @@ def train_gnn(model, train_data, val_data, args, device):
     best_val_loss = float('inf')
     best_model_state = None
     patience_counter = 0
-    criterion = nn.MSELoss()
 
     logger.info(f"Training GNN ({args.mode.upper()} mode)")
     logger.info(f"Epochs: {args.epochs}, Batch size: {args.batch_size}, LR: {args.learning_rate}")
+    logger.info(f"PK loss: {args.loss_type_pk}, PD loss: {args.loss_type_pd}")
 
     for epoch in range(args.epochs):
         model.train()
@@ -236,8 +236,8 @@ def train_gnn(model, train_data, val_data, args, device):
             pd_preds = pd_predictions[batch.pd_mask]
             pd_tgts = batch.pd_targets[batch.pd_mask].reshape(-1, 1)
 
-            loss_pk = criterion(pk_preds, pk_tgts)
-            loss_pd = criterion(pd_preds, pd_tgts)
+            loss_pk = compute_loss(pk_preds, pk_tgts, args.loss_type_pk, args.quantile_q, args.hybrid_lambda)
+            loss_pd = compute_loss(pd_preds, pd_tgts, args.loss_type_pd, args.quantile_q, args.hybrid_lambda)
             loss = args.pk_loss_weight * loss_pk + args.pd_loss_weight * loss_pd
 
             optimizer.zero_grad()
