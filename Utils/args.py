@@ -14,7 +14,7 @@ def get_args():
 
     # ==================== Model Architecture ====================
     parser.add_argument('--model', type=str, default='mlp',
-                       choices=['mlp', 'gnn', 'lstm', 'hqcnn', 'hqgnn', 'hqlstm'],
+                       choices=['mlp', 'gnn', 'lstm', 'hqcnn', 'hqgnn', 'hqlstm', 'qnn'],
                        help='Model architecture')
     parser.add_argument('--mode', type=str, default='dual_stage',
                        choices=['separate', 'joint', 'dual_stage', 'shared'],
@@ -176,7 +176,7 @@ def get_args():
 
     # Auto-generate experiment name if not provided
     if args.experiment_name is None:
-        if args.model in ['mlp', 'hqcnn']:
+        if args.model in ['mlp', 'hqcnn', 'qnn']:
             hdim = args.hidden_dim
         elif args.model in ['lstm', 'hqlstm']:
             hdim = args.lstm_hidden_dim

@@ -842,6 +842,47 @@ class HierarchicalHQCNN(nn.Module):
 
 
 # ============================================================
+# Hierarchical QNN (Amplitude Embedding) Wrapper
+# ============================================================
+class HierarchicalQNN(nn.Module):
+    """
+    Hierarchical QNN for PK/PD prediction.
+
+    Uses QNN_Amplitude (amplitude embedding + StronglyEntanglingLayers)
+    for both PK and PD prediction. Same structure as HierarchicalHQCNN
+    but with QNN_Amplitude instead of HQCNN.
+    """
+
+    def __init__(self, pk_input_dim, pd_input_dim, n_qubits=4, n_qlayers=2, mode='dual_stage'):
+        super().__init__()
+        self.mode = mode
+
+        self.pk_model = QNN_Amplitude(pk_input_dim, n_qubits=n_qubits, n_layers=n_qlayers)
+        self.pd_model = QNN_Amplitude(pd_input_dim + 1, n_qubits=n_qubits, n_layers=n_qlayers)
+
+    def forward(self, x_pk=None, x_pd=None):
+        results = {}
+
+        if x_pk is not None:
+            pk_pred = self.pk_model(x_pk)
+            results['pk'] = pk_pred
+
+        if x_pd is not None:
+            if self.mode == 'dual_stage' and 'pk' in results:
+                pk_for_pd = results['pk']
+            elif self.mode == 'joint' and 'pk' in results:
+                pk_for_pd = results['pk'].detach()
+            else:
+                pk_for_pd = torch.zeros(x_pd.size(0), 1, device=x_pd.device)
+
+            x_pd_with_pk = torch.cat([x_pd, pk_for_pd], dim=1)
+            pd_pred = self.pd_model(x_pd_with_pk)
+            results['pd'] = pd_pred
+
+        return results
+
+
+# ============================================================
 # HQLSTM - Hierarchical Quantum LSTM
 # ============================================================
 class QLSTMEncoder(nn.Module):

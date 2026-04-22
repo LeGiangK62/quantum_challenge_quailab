@@ -29,7 +29,7 @@ from Utils.log import plot_metrics, logger
 from Models.mlp import HierarchicalPKPDMLP
 from Models.gnn import HierarchicalPKPDGNN
 from Models.lstm import HierarchicalPKPDLSTM
-from Models.quantum import HQGNN, HierarchicalHQCNN, HQLSTM
+from Models.quantum import HQGNN, HierarchicalHQCNN, HierarchicalQNN, HQLSTM
 
 # Set style
 sns.set_style('whitegrid')
@@ -330,6 +330,79 @@ def main():
         train_results = evaluate_mlp(model, train_loader, device)
         test_results = evaluate_mlp(model, test_loader, device)
 
+    elif args.model == 'qnn':
+        logger.info("=" * 60)
+        logger.info("TRAINING HIERARCHICAL QNN (Amplitude Embedding)")
+        logger.info("=" * 60)
+
+        # Prepare data (same as MLP)
+        if args.combine:
+            data = prepare_pkpd_data(
+                csv_path=csv_data_path,
+                test_size=args.test_size,
+                val_size=args.val_size,
+                random_state=args.random_seed,
+                use_perkg=args.use_perkg,
+                time_windows=args.time_windows,
+                half_lives=args.half_lives,
+                add_decay=args.add_decay,
+                stratified_split=False,
+                normalize_data=args.normalize_data,
+                add_pk_summary=args.add_pk_summary,
+                add_pk_cumulative=args.add_pk_cumulative,
+                no_placebo=args.no_placebo,
+            )
+            data['val_pk'] = data['train_pk']
+            data['val_pd'] = data['train_pd']
+            data['test_pk'] = data['train_pk']
+            data['test_pd'] = data['train_pd']
+        else:
+            data = prepare_pkpd_data(
+                csv_path=csv_data_path,
+                test_size=args.test_size,
+                val_size=args.val_size,
+                random_state=args.random_seed,
+                use_perkg=args.use_perkg,
+                time_windows=args.time_windows,
+                half_lives=args.half_lives,
+                add_decay=args.add_decay,
+                stratified_split=args.stratified_split,
+                normalize_data=args.normalize_data,
+                add_pk_summary=args.add_pk_summary,
+                add_pk_cumulative=args.add_pk_cumulative,
+                no_placebo=args.no_placebo,
+            )
+
+        train_dataset = PKPDDataset(data['train_pk'], data['train_pd'])
+        val_dataset = PKPDDataset(data['val_pk'], data['val_pd'])
+        test_dataset = PKPDDataset(data['test_pk'], data['test_pd'])
+
+        train_loader = TorchDataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_pkpd)
+        val_loader = TorchDataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_pkpd)
+        test_loader = TorchDataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_pkpd)
+
+        model = HierarchicalQNN(
+            pk_input_dim=data['n_features'],
+            pd_input_dim=data['n_features'],
+            n_qubits=args.n_qubits,
+            n_qlayers=args.n_qlayers,
+            mode=args.mode,
+        )
+
+        logger.info(f"Model: {args.model.upper()}, Mode: {args.mode}")
+        logger.info(f"Input dim: {data['n_features']}, Qubits: {args.n_qubits}, Q-layers: {args.n_qlayers}")
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(f"Total parameters: {total_params:,}")
+
+        model, history = train_mlp(model, train_loader, val_loader, args, device)
+
+        logger.info("=" * 60)
+        logger.info("EVALUATION")
+        logger.info("=" * 60)
+
+        train_results = evaluate_mlp(model, train_loader, device)
+        test_results = evaluate_mlp(model, test_loader, device)
+
     elif args.model in ['lstm', 'hqlstm']:
         logger.info("=" * 60)
         logger.info(f"TRAINING HIERARCHICAL {'HQLSTM (Quantum)' if args.model == 'hqlstm' else 'LSTM'}")
@@ -458,7 +531,7 @@ def main():
         plot_predictions(train_results, test_results, save_dir, f"{args.model}_{args.mode}")
 
         # Patient time series (for MLP and HQCNN - need raw data with IDs)
-        if args.model in ['mlp', 'hqcnn']:
+        if args.model in ['mlp', 'hqcnn', 'qnn']:
             # Combine train and test data for patient plots
             all_pk_data = {
                 'X': np.vstack([data['train_pk']['X'], data['val_pk']['X'], data['test_pk']['X']]),
