@@ -15,7 +15,7 @@ class QNN(nn.Module):
         Input -> Classical Linear -> Angle Embedding -> StronglyEntanglingLayers -> Measurement -> Output
     """
 
-    def __init__(self, input_features, n_qubits=4, n_layers=2):
+    def __init__(self, input_features, n_qubits=4, n_layers=2, q_dev=None):
         super(QNN, self).__init__()
 
         self.n_qubits = n_qubits
@@ -24,8 +24,8 @@ class QNN(nn.Module):
         # Classical preprocessing layer to match input to n_qubits
         self.pre_net = nn.Linear(input_features, n_qubits)
 
-        # Create quantum device
-        self.dev = qml.device("default.qubit", wires=n_qubits)
+        # Create quantum device (allow override for hardware/simulator backends)
+        self.dev = q_dev if q_dev is not None else qml.device("default.qubit", wires=n_qubits)
 
         # Initialize quantum circuit weights
         # StronglyEntanglingLayers requires shape (n_layers, n_qubits, 3)
@@ -33,7 +33,8 @@ class QNN(nn.Module):
         self.q_weights = nn.Parameter(torch.randn(weight_shape) * 0.1)
 
         # Create quantum node
-        self.qnode = qml.QNode(self._circuit, self.dev, interface="torch", diff_method="backprop")
+        diff_method = "backprop" if q_dev is None else "best"
+        self.qnode = qml.QNode(self._circuit, self.dev, interface="torch", diff_method=diff_method)
 
         # Classical post-processing layer
         self.post_net = nn.Linear(n_qubits, 1)
@@ -100,7 +101,7 @@ class QNN_Amplitude(nn.Module):
     Note: Amplitude embedding requires input dimension to be 2^n_qubits.
     """
 
-    def __init__(self, input_features, n_qubits=4, n_layers=2):
+    def __init__(self, input_features, n_qubits=4, n_layers=2, q_dev=None):
         super(QNN_Amplitude, self).__init__()
 
         self.n_qubits = n_qubits
@@ -110,15 +111,16 @@ class QNN_Amplitude(nn.Module):
         # Classical preprocessing to match amplitude embedding dimension
         self.pre_net = nn.Linear(input_features, self.amplitude_dim)
 
-        # Create quantum device
-        self.dev = qml.device("default.qubit", wires=n_qubits)
+        # Create quantum device (allow override for hardware/simulator backends)
+        self.dev = q_dev if q_dev is not None else qml.device("default.qubit", wires=n_qubits)
 
         # Initialize quantum circuit weights
         weight_shape = (n_layers, n_qubits, 3)
         self.q_weights = nn.Parameter(torch.randn(weight_shape) * 0.1)
 
         # Create quantum node
-        self.qnode = qml.QNode(self._circuit, self.dev, interface="torch", diff_method="backprop")
+        diff_method = "backprop" if q_dev is None else "best"
+        self.qnode = qml.QNode(self._circuit, self.dev, interface="torch", diff_method=diff_method)
 
         # Classical post-processing layer
         # Output from probs is 2^n_qubits dimensional
@@ -447,11 +449,10 @@ _HQCNN_POOLING_OUT = [1, 3, 5, 7]
 _hqcnn_dev = qml.device("default.qubit", wires=_HQCNN_N_QUBITS)
 
 
-@qml.qnode(_hqcnn_dev)
-def _hqcnn_circuit(inputs, weights_0, weights_1, weights_2, weights_3, weights_4,
-                   weights_5, weights_6, weights_7, weights_8):
+def _hqcnn_circuit_fn(inputs, weights_0, weights_1, weights_2, weights_3, weights_4,
+                      weights_5, weights_6, weights_7, weights_8):
     """
-    QCNN circuit with convolutional and pooling layers.
+    QCNN circuit body (no QNode decorator so it can be rebound to any device).
 
     Architecture:
         - Angle Embedding (8 qubits)
@@ -481,6 +482,9 @@ def _hqcnn_circuit(inputs, weights_0, weights_1, weights_2, weights_3, weights_4
     return [qml.expval(qml.PauliZ(wires=i)) for i in _HQCNN_POOLING_OUT]
 
 
+_hqcnn_circuit = qml.QNode(_hqcnn_circuit_fn, _hqcnn_dev)
+
+
 class HQCNN(nn.Module):
     """
     Hybrid Quantum Convolutional Neural Network (HQCNN).
@@ -496,16 +500,25 @@ class HQCNN(nn.Module):
         Input -> Linear(input, 8) -> QCNN -> Linear(4, 1) -> Output
     """
 
-    def __init__(self, input_features, num_layers=1):
+    def __init__(self, input_features, num_layers=1, q_dev=None):
         """
         Args:
             input_features: Number of input features
+            num_layers: Number of stacked QCNN layers
+            q_dev: Optional PennyLane device. If None uses the module-level
+                default (`default.qubit`). Pass a different device to run the
+                same circuit on simulators or real hardware (e.g. qiskit.aer,
+                qiskit.remote with an IBM backend).
         """
         super(HQCNN, self).__init__()
         self.clayer_1 = nn.Linear(input_features, 8)
+        if q_dev is None:
+            qnode = _hqcnn_circuit
+        else:
+            qnode = qml.QNode(_hqcnn_circuit_fn, q_dev, interface="torch")
         self.qlayers = torch.nn.ModuleList()
         for _ in range(num_layers):
-            self.qlayers.append( qml.qnn.TorchLayer(_hqcnn_circuit, _HQCNN_WEIGHT_SHAPES))
+            self.qlayers.append(qml.qnn.TorchLayer(qnode, _HQCNN_WEIGHT_SHAPES))
         self.clayer_2 = nn.Linear(4, 1)
 
     def forward(self, x):
@@ -521,7 +534,7 @@ class QPDGNNDecoder(nn.Module):
 
     def __init__(self, pk_embedding_dim, input_dim, hidden_dim=64, num_layers=3,
                  dropout=0.2, use_attention=False, use_gating=True,
-                 n_qlayers=1, n_qubits=4, using_hqcnn=False):
+                 n_qlayers=1, n_qubits=4, using_hqcnn=False, q_dev=None):
         super(QPDGNNDecoder, self).__init__()
 
         self.use_attention = use_attention
@@ -559,12 +572,13 @@ class QPDGNNDecoder(nn.Module):
 
         # PD predictor head
         if using_hqcnn:
-            self.pd_predictor = HQCNN(input_features=hidden_dim, num_layers=n_qlayers)
+            self.pd_predictor = HQCNN(input_features=hidden_dim, num_layers=n_qlayers, q_dev=q_dev)
         else:
             self.pd_predictor = QNN_Amplitude(
                 input_features=hidden_dim,
                 n_qubits=n_qubits,
                 n_layers=n_qlayers,
+                q_dev=q_dev,
             )
 
         # Residual branch - learns additional corrections
@@ -748,7 +762,7 @@ class HQGNN(nn.Module):
 
     def __init__(self, feature_dim, hidden_dim=64, num_layers_pk=3, num_layers_pd=3,
                  dropout=0.2, use_attention=False, use_gating=True,
-                 n_qlayers=1, n_qubits=4, using_hqcnn=False):
+                 n_qlayers=1, n_qubits=4, using_hqcnn=False, q_dev=None):
         super(HQGNN, self).__init__()
 
         self.pk_encoder = PKGNNEncoder(
@@ -770,6 +784,7 @@ class HQGNN(nn.Module):
             n_qlayers=n_qlayers,
             n_qubits=n_qubits,
             using_hqcnn=using_hqcnn,
+            q_dev=q_dev,
         )
 
     def forward(self, data, return_pk=False):
@@ -798,13 +813,13 @@ class HierarchicalHQCNN(nn.Module):
     PD model receives PK prediction as additional input.
     """
 
-    def __init__(self, pk_input_dim, pd_input_dim, num_layers=1, mode='dual_stage'):
+    def __init__(self, pk_input_dim, pd_input_dim, num_layers=1, mode='dual_stage', q_dev=None):
         super().__init__()
         self.mode = mode
 
         # Separate HQCNN for PK and PD
-        self.pk_model = HQCNN(pk_input_dim, num_layers=num_layers)
-        self.pd_model = HQCNN(pd_input_dim + 1, num_layers=num_layers)  # +1 for PK prediction
+        self.pk_model = HQCNN(pk_input_dim, num_layers=num_layers, q_dev=q_dev)
+        self.pd_model = HQCNN(pd_input_dim + 1, num_layers=num_layers, q_dev=q_dev)  # +1 for PK prediction
 
     def forward(self, x_pk=None, x_pd=None):
         """
@@ -853,12 +868,12 @@ class HierarchicalQNN(nn.Module):
     but with QNN_Amplitude instead of HQCNN.
     """
 
-    def __init__(self, pk_input_dim, pd_input_dim, n_qubits=4, n_qlayers=2, mode='dual_stage'):
+    def __init__(self, pk_input_dim, pd_input_dim, n_qubits=4, n_qlayers=2, mode='dual_stage', q_dev=None):
         super().__init__()
         self.mode = mode
 
-        self.pk_model = QNN_Amplitude(pk_input_dim, n_qubits=n_qubits, n_layers=n_qlayers)
-        self.pd_model = QNN_Amplitude(pd_input_dim + 1, n_qubits=n_qubits, n_layers=n_qlayers)
+        self.pk_model = QNN_Amplitude(pk_input_dim, n_qubits=n_qubits, n_layers=n_qlayers, q_dev=q_dev)
+        self.pd_model = QNN_Amplitude(pd_input_dim + 1, n_qubits=n_qubits, n_layers=n_qlayers, q_dev=q_dev)
 
     def forward(self, x_pk=None, x_pd=None):
         results = {}
@@ -889,7 +904,7 @@ class QLSTMEncoder(nn.Module):
     """LSTM encoder with quantum output layer."""
 
     def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3,
-                 bidirectional=True, n_qlayers=1, n_qubits=4, using_hqcnn=False):
+                 bidirectional=True, n_qlayers=1, n_qubits=4, using_hqcnn=False, q_dev=None):
         super().__init__()
 
         self.hidden_dim = hidden_dim
@@ -917,12 +932,13 @@ class QLSTMEncoder(nn.Module):
 
         # Quantum predictor
         if using_hqcnn:
-            self.predictor = HQCNN(lstm_out_dim, num_layers=n_qlayers)
+            self.predictor = HQCNN(lstm_out_dim, num_layers=n_qlayers, q_dev=q_dev)
         else:
             self.predictor = QNN_Amplitude(
                 input_features=lstm_out_dim,
                 n_qubits=n_qubits,
                 n_layers=n_qlayers,
+                q_dev=q_dev,
             )
 
         # Classical residual branch (same as PD decoder)
@@ -979,7 +995,7 @@ class QPDLSTMDecoder(nn.Module):
     """LSTM decoder with quantum output for PD prediction."""
 
     def __init__(self, input_dim, pk_embedding_dim, hidden_dim=128, num_layers=2,
-                 dropout=0.3, bidirectional=True, use_gating=True, n_qlayers=1, n_qubits=4, using_hqcnn=False):
+                 dropout=0.3, bidirectional=True, use_gating=True, n_qlayers=1, n_qubits=4, using_hqcnn=False, q_dev=None):
         super().__init__()
 
         self.use_gating = use_gating
@@ -1009,12 +1025,13 @@ class QPDLSTMDecoder(nn.Module):
 
         # Quantum predictor
         if using_hqcnn:
-            self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers)
+            self.predictor = HQCNN(hidden_dim * self.num_directions, num_layers=n_qlayers, q_dev=q_dev)
         else:
             self.predictor = QNN_Amplitude(
                 input_features=hidden_dim * self.num_directions,
                 n_qubits=n_qubits,
                 n_layers=n_qlayers,
+                q_dev=q_dev,
             )
 
         # Residual branch (classical)
@@ -1070,7 +1087,7 @@ class HQLSTM(nn.Module):
     """
 
     def __init__(self, input_dim, hidden_dim=128, num_layers=2, dropout=0.3,
-                 bidirectional=True, use_gating=True, mode='dual_stage', n_qlayers=1, n_qubits=4, using_hqcnn=False):
+                 bidirectional=True, use_gating=True, mode='dual_stage', n_qlayers=1, n_qubits=4, using_hqcnn=False, q_dev=None):
         super().__init__()
 
         self.mode = mode
@@ -1087,6 +1104,7 @@ class HQLSTM(nn.Module):
             n_qlayers=n_qlayers,
             n_qubits=n_qubits,
             using_hqcnn=using_hqcnn,
+            q_dev=q_dev,
         )
 
         pk_output_dim = hidden_dim * self.num_directions
@@ -1103,6 +1121,7 @@ class HQLSTM(nn.Module):
             n_qlayers=n_qlayers,
             n_qubits=n_qubits,
             using_hqcnn=using_hqcnn,
+            q_dev=q_dev,
         )
 
     def forward(self, x_pk=None, x_pd=None, lengths_pk=None, lengths_pd=None, return_pk=False):

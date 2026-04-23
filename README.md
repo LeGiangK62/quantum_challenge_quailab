@@ -146,17 +146,24 @@ python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --add_pk_summary\
     --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping  
 
 add_pk_cumulative or add_pk_summary help increase MLP performance
+
+
 python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
 
 
 python main.py --model lstm --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
 
 python main.py  --model gnn  --gnn_hidden_dim 64 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+
+
 Not work for GNN
 
 python main.py --model hqcnn --hqcnn_num_layers 2 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative     
 
-  python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
+python main.py --model qnn --n_qubits 4 --n_qlayers 2 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
+
+
+python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
 
 
 
@@ -184,6 +191,9 @@ python main.py  --model hqgnn --n_qubits 4 --n_qlayers 2   --gnn_hidden_dim 256 
 # HQLSTM
 python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --log_interval 50 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
 
+
+# Dose Prediction
+python dose_prediction.py --model_dir Results/26_04_22_15_49_30_hqgnn_dual_stage_h256_combine
 ```
 
 ---
