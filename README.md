@@ -185,6 +185,9 @@ python main.py --model lstm --lstm_hidden_dim 128 --epochs 300 --log_interval 50
 # HQCNN
 python main.py --model hqcnn --hqcnn_num_layers 1 --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --log_interval 50  --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
 
+# HQNN
+ python main.py --model resqnn --mode dual_stage --hidden_dim 256 --n_blocks 4 --n_qubits 4 --n_qlayers 1 --dropout 0.3 --epochs 300 --batch_size 16 --learning_rate 0.001 --csv_path UpdatedEstData --add_pk_summary --add_pk_cumulative --combine    
+
 # HQGNN
 python main.py  --model hqgnn --n_qubits 4 --n_qlayers 2   --gnn_hidden_dim 256 --epochs 300 --log_interval 20  --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary  
 

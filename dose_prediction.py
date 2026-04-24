@@ -75,7 +75,7 @@ def infer_model_config(model_dir):
     dirname = os.path.basename(model_dir)
 
     # Detect model type
-    model_types = ['hqlstm', 'hqgnn', 'hqcnn', 'lstm', 'gnn', 'mlp', 'qnn']
+    model_types = ['hqlstm', 'hqgnn', 'hqcnn', 'lstm', 'gnn', 'mlp', 'resqnn', 'qnn']
     model_type = None
     for mt in model_types:
         if f'_{mt}_' in dirname or dirname.startswith(mt):
@@ -159,6 +159,25 @@ def load_model(model_dir, config, n_features):
         model = HierarchicalQNN(
             pk_input_dim=n_features, pd_input_dim=n_features,
             n_qubits=n_qubits, n_qlayers=n_qlayers, mode=mode,
+        )
+    elif mt == 'resqnn':
+        from Models.quantum import HierarchicalResQNN
+        # Infer n_blocks from checkpoint
+        n_blocks = sum(1 for k in checkpoint
+                       if k.startswith('pk_encoder.blocks.') and k.endswith('.q_weights'))
+        # Infer n_qubits / n_qlayers from q_weights shape of first block
+        q_w = checkpoint.get('pk_encoder.blocks.0.q_weights')
+        if q_w is not None:
+            n_qlayers, n_qubits, _ = q_w.shape
+        else:
+            n_qlayers, n_qubits = 1, 4
+        head_w = checkpoint.get('pk_head.0.weight')
+        head_hidden = int(head_w.shape[0]) if head_w is not None else 128
+        model = HierarchicalResQNN(
+            mode=mode,
+            pk_input_dim=n_features, pd_input_dim=n_features,
+            hidden_dim=hdim, n_blocks=max(n_blocks, 1), head_hidden=head_hidden,
+            n_qubits=n_qubits, n_qlayers=n_qlayers,
         )
     elif mt == 'gnn':
         from Models.gnn import HierarchicalPKPDGNN
@@ -299,7 +318,7 @@ def _predict_model(model, model_type, features, obs_times):
     """
     Run model forward pass, return (pk_pred, pd_pred) as numpy arrays.
     """
-    if model_type in ['mlp', 'hqcnn', 'qnn']:
+    if model_type in ['mlp', 'hqcnn', 'qnn', 'resqnn']:
         results = model(features, features)
         pk = results['pk'].cpu().numpy().flatten()
         pd_ = results['pd'].cpu().numpy().flatten()
@@ -589,7 +608,7 @@ def main():
     checkpoint = torch.load(model_path, map_location="cpu")
 
     # Heuristic: count features from first layer weight
-    if mt in ['mlp', 'hqcnn', 'qnn']:
+    if mt in ['mlp', 'hqcnn', 'qnn', 'resqnn']:
         # Find input dimension from first layer
         for k, v in checkpoint.items():
             if 'weight' in k and v.dim() == 2:

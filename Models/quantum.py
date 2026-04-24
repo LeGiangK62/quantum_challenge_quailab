@@ -898,6 +898,156 @@ class HierarchicalQNN(nn.Module):
 
 
 # ============================================================
+# Hierarchical Residual QNN (MLP scaffold with quantum core)
+# ============================================================
+class QResBlock(nn.Module):
+    """Residual block with LayerNorm and a quantum circuit core.
+
+    Mirrors Models/mlp.py:ResBlock — the two-linear MLP core
+    (fc1 -> ReLU -> fc2) is replaced by:
+        proj_in -> tanh -> [AngleEmbedding + StronglyEntanglingLayers] -> proj_out
+
+    Forward:  x + dropout(proj_out(quantum(tanh(proj_in(LN(x))))))
+    """
+
+    def __init__(self, hidden_dim, n_qubits=4, n_qlayers=1, dropout=0.1, q_dev=None):
+        super().__init__()
+        self.n_qubits = n_qubits
+        self.n_qlayers = n_qlayers
+
+        self.ln = nn.LayerNorm(hidden_dim)
+        self.proj_in = nn.Linear(hidden_dim, n_qubits)
+        self.proj_out = nn.Linear(n_qubits, hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+        self.q_weights = nn.Parameter(torch.randn(n_qlayers, n_qubits, 3) * 0.1)
+
+        # Broadcast the whole batch through default.qubit; loop on hardware/remote.
+        self._batched = q_dev is None
+        dev = q_dev if q_dev is not None else qml.device("default.qubit", wires=n_qubits)
+        diff_method = "backprop" if q_dev is None else "best"
+        self.qnode = qml.QNode(self._circuit, dev, interface="torch", diff_method=diff_method)
+
+    def _circuit(self, inputs, weights):
+        qml.AngleEmbedding(inputs, wires=range(self.n_qubits), rotation='Y')
+        qml.StronglyEntanglingLayers(weights, wires=range(self.n_qubits))
+        return [qml.expval(qml.PauliZ(i)) for i in range(self.n_qubits)]
+
+    def forward(self, x):
+        h = self.ln(x)
+        h = torch.tanh(self.proj_in(h))  # bound to [-1, 1] for angle embedding
+
+        if self._batched:
+            q_out = self.qnode(h, self.q_weights)
+            if isinstance(q_out, (list, tuple)):
+                q_out = torch.stack(list(q_out))  # (n_qubits, batch)
+            if q_out.ndim == 2:
+                q_out = q_out.T  # (batch, n_qubits)
+            q_outs = q_out.float()
+        else:
+            batch_size = h.shape[0]
+            buf = []
+            for i in range(batch_size):
+                q_i = self.qnode(h[i], self.q_weights)
+                buf.append(torch.stack(q_i))
+            q_outs = torch.stack(buf).float()
+
+        h = self.proj_out(q_outs)
+        return x + self.dropout(h)
+
+
+class ResidualQNNEncoder(nn.Module):
+    """Residual encoder — ResidualMLPEncoder with quantum blocks instead of MLP blocks."""
+
+    def __init__(self, input_dim, hidden_dim=256, n_blocks=4,
+                 n_qubits=4, n_qlayers=1, dropout=0.3, q_dev=None):
+        super().__init__()
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.blocks = nn.ModuleList([
+            QResBlock(hidden_dim, n_qubits=n_qubits, n_qlayers=n_qlayers,
+                      dropout=dropout, q_dev=q_dev)
+            for _ in range(n_blocks)
+        ])
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        h = self.input_proj(x)
+        for block in self.blocks:
+            h = block(h)
+        return h
+
+    def enable_mc_dropout(self):
+        for m in self.modules():
+            if isinstance(m, nn.Dropout):
+                m.train()
+
+
+class HierarchicalResQNN(nn.Module):
+    """Hierarchical Residual QNN for PK/PD prediction.
+
+    Same scaffold as Models/mlp.py:HierarchicalPKPDMLP (separate PK/PD
+    encoders, same head structure, same forward modes) — only the
+    encoder's ResBlock core is swapped for a quantum circuit.
+    """
+
+    def __init__(self, mode, pk_input_dim, pd_input_dim,
+                 hidden_dim=256, n_blocks=4, dropout=0.3, head_hidden=128,
+                 n_qubits=4, n_qlayers=1, q_dev=None):
+        super().__init__()
+        self.mode = mode
+        self.hidden_dim = hidden_dim
+
+        enc_kwargs = dict(
+            hidden_dim=hidden_dim, n_blocks=n_blocks,
+            n_qubits=n_qubits, n_qlayers=n_qlayers,
+            dropout=dropout, q_dev=q_dev,
+        )
+        self.pk_encoder = ResidualQNNEncoder(pk_input_dim, **enc_kwargs)
+        self.pd_encoder = ResidualQNNEncoder(pd_input_dim + 1, **enc_kwargs)
+
+        self.pk_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden, 1),
+        )
+        self.pd_head = nn.Sequential(
+            nn.Linear(hidden_dim, head_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(head_hidden, 1),
+        )
+
+    def forward(self, x_pk=None, x_pd=None):
+        results = {}
+
+        if x_pk is not None:
+            z_pk = self.pk_encoder(x_pk)
+            results['pk'] = self.pk_head(z_pk)
+
+        if x_pd is not None:
+            if self.mode == 'dual_stage' and 'pk' in results:
+                pk_for_pd = results['pk']
+            elif self.mode == 'joint' and 'pk' in results:
+                pk_for_pd = results['pk'].detach()
+            else:
+                pk_for_pd = torch.zeros(x_pd.size(0), 1, device=x_pd.device)
+
+            x_pd_with_pk = torch.cat([x_pd, pk_for_pd], dim=1)
+            z_pd = self.pd_encoder(x_pd_with_pk)
+            results['pd'] = self.pd_head(z_pd)
+
+        return results
+
+    def enable_mc_dropout(self):
+        self.pk_encoder.enable_mc_dropout()
+        self.pd_encoder.enable_mc_dropout()
+        for m in self.modules():
+            if isinstance(m, nn.Dropout):
+                m.train()
+
+
+# ============================================================
 # HQLSTM - Hierarchical Quantum LSTM
 # ============================================================
 class QLSTMEncoder(nn.Module):
