@@ -5,3 +5,7 @@ Results/
 Instruction/
 .claude
 .vscode
+
+# Notebooks (kept locally, not tracked)
+*.ipynb
+.ipynb_checkpoints/

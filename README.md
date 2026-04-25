@@ -117,57 +117,6 @@ python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64
 # HQLSTM (Quantum LSTM)
 python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 
 ```
-```bash
-
-### Final Data
-python main.py --model mlp --epochs 300 --csv_path UpdatedEstData
-
-python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 \
-     --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping 
-   
-
-
-python main.py --model gnn  --gnn_hidden_dim 64 \
-    --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping 
-
-# python main.py --model gnn --use_attention --epochs 300 --csv_path UpdatedEstData
-python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --csv_path UpdatedEstData
-
-python main.py --model hqcnn --epochs 300 --hqcnn_num_layers 1 --csv_path UpdatedEstData
-python main.py --model hqgnn --epochs 300 --gnn_hidden_dim 64 --csv_path UpdatedEstData
-python main.py --model hqlstm --epochs 300 --lstm_hidden_dim 128 --csv_path UpdatedEstData
-
-
-python main.py --model mlp --add_pk_summary  \
-    --epochs 300 --csv_path UpdatedEstData   
-python main.py --model gnn  --gnn_hidden_dim 64 --add_pk_summary   \
-    --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping  
-python main.py --model lstm --epochs 300 --lstm_hidden_dim 128 --add_pk_summary\
-    --epochs 1000 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping  
-
-add_pk_cumulative or add_pk_summary help increase MLP performance
-
-
-python main.py --model mlp --hidden_dim 512 --n_blocks 6 --head_hidden 256 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
-
-
-python main.py --model lstm --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
-
-python main.py  --model gnn  --gnn_hidden_dim 64 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
-
-
-Not work for GNN
-
-python main.py --model hqcnn --hqcnn_num_layers 2 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative     
-
-python main.py --model qnn --n_qubits 4 --n_qlayers 2 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative    
-
-
-python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
-
-
-
-```
 
 
 ### Final Run
@@ -195,44 +144,41 @@ python main.py  --model hqgnn --n_qubits 4 --n_qlayers 2   --gnn_hidden_dim 256 
 python main.py --model hqlstm --n_qubits 4 --n_qlayers 2 --lstm_hidden_dim 128 --epochs 300 --log_interval 50 --csv_path UpdatedEstData --learning_rate 5e-4 --no_early_stopping --add_pk_cumulative --add_pk_summary
 
 
-# Dose Prediction
-python dose_prediction.py --model_dir Results/26_04_22_15_49_30_hqgnn_dual_stage_h256_combine
 ```
-
 ---
 
 ## Dose Prediction
 
-After training, use `dose_prediction.py` to find optimal doses.
+After training, run `dose_prediction.py` to recommend daily and weekly doses
+that achieve the biomarker target in 90 % of a virtual population.
 
-### Arguments
-```
---model         Model type: mlp, gnn, lstm, hqcnn, hqgnn, hqlstm
---model_path    Path to model checkpoint (optional, auto-finds latest)
---results_dir   Directory containing results (default: Results)
-```
-
-### Sample Commands
+The model type, hidden size, mode, and feature flags (`add_pk_summary`,
+`add_pk_cumulative`) are auto-inferred from the experiment folder name and
+checkpoint, so only `--model_dir` is required.
 
 ```bash
-# MLP dose prediction
-python dose_prediction.py --model mlp
-
-# GNN dose prediction
-python dose_prediction.py --model gnn
-
-# LSTM dose prediction
-python dose_prediction.py --model lstm
-
-# HQCNN dose prediction
-python dose_prediction.py --model hqcnn
-
-# HQGNN dose prediction
-python dose_prediction.py --model hqgnn
-
-# HQLSTM dose prediction
-python dose_prediction.py --model hqlstm
+python dose_prediction.py --model_dir Results/26_04_22_15_49_30_hqgnn_dual_stage_h256_combine
 ```
+
+### Arguments
+
+```
+--model_dir       (required) Path to a Results/<...> training run directory
+--threshold       Biomarker threshold in ng/mL (default: BIOMARKER_THRESHOLD)
+--n_ss_daily      Fixed N_ss for daily dosing; overrides per-subject ke estimate
+--n_ss_weekly     Fixed N_ss for weekly dosing; overrides per-subject ke estimate
+```
+
+### Pipeline
+
+1. Build a virtual population of `--n_population` subjects with
+   body weight ~ Uniform(50, 130) kg.
+2. For each candidate dose on the prescribed grid (0.1 mg for daily,
+   1 mg for weekly), simulate steady-state PD trajectories through the
+   trained model and compute the fraction of subjects whose minimum PD
+   exceeds `--threshold` over the dosing interval (24 h / 168 h).
+3. Return the smallest dose meeting the 90 % target.
+
 
 ---
 
@@ -240,22 +186,27 @@ python dose_prediction.py --model hqlstm
 
 ```
 .
-├── main.py                 # Training entry point
-├── dose_prediction.py      # Dose optimization
+├── main.py                  # Training entry point
+├── dose_prediction.py       # Dose optimization on a virtual population
 ├── Data/
-│   └── QIC2025-EstDat.csv  # Dataset
+│   └── UpdatedEstData.csv   # Dataset (default for the final runs)
 ├── Models/
-│   ├── mlp.py              # MLP architecture
-│   ├── gnn.py              # GNN architecture
-│   ├── lstm.py             # LSTM architecture
-│   └── quantum.py          # Quantum models (HQCNN, HQGNN, HQLSTM)
+│   ├── mlp.py               # Hierarchical MLP with ResBlocks
+│   ├── gnn.py               # Hierarchical GNN (GCN / GAT)
+│   ├── lstm.py              # Hierarchical Bidirectional LSTM
+│   └── quantum.py           # HQCNN, HQNN, ResQNN, HQGNN, HQLSTM
 ├── Utils/
-│   ├── args.py             # Argument parsing
-│   ├── data_loader.py      # Data loading and preprocessing
-│   ├── training.py         # Training loops
-│   └── log.py              # Logging utilities
-└── Results/                # Saved models and outputs
+│   ├── args.py              # CLI argument parsing
+│   ├── data_loader.py       # Tabular & LSTM data, dose-stratified split
+│   ├── data_process.py      # Graph construction for GNN models
+│   ├── pre_processing.py    # Feature engineering helpers
+│   ├── training.py          # Training loops for each model family
+│   ├── plot.py              # Per-patient time-series and metric plots
+│   └── log.py               # Logging utilities
+└── Results/<run_id>/        # Per-run outputs (model.pth, metrics, plots)
 ```
+
+Each training run is saved under `Results/<timestamp>_<model>_<mode>_<...>`.
 
 ---
 # Contact
