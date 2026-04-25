@@ -475,7 +475,7 @@ def plot_lstm_patient_timeseries(sequences, model, device, save_dir, model_name,
         ax_pd.set_ylabel('PD Value')
         ax_pd.grid(True, alpha=0.3)
 
-    plt.suptitle(f'{model_name} - Patient Time Series', fontsize=13)
+    # plt.suptitle(f'{model_name} - Patient Time Series', fontsize=13)
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, 'patient_timeseries.png'), dpi=300, bbox_inches='tight')
     plt.close()
